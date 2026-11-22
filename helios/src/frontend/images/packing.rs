@@ -17,7 +17,9 @@ pub(crate) fn tensor_layout(
     kind: ImageLayoutKind,
     name: &str,
     patches: usize,
+    preparation: Option<crate::model::contract::ImagePreparationKind>,
 ) -> Result<(Dtype, usize)> {
+    use crate::model::contract::ImagePreparationKind;
     use Dtype::{Float32, Int32, Int64};
     let layout = match (kind, name) {
         (ImageLayoutKind::Qwen | ImageLayoutKind::Mimo, "vision_pixel_values") => {
@@ -27,7 +29,10 @@ pub(crate) fn tensor_layout(
             ImageLayoutKind::Deepseek | ImageLayoutKind::DeepseekRowMajor | ImageLayoutKind::Moonvit | ImageLayoutKind::Step,
             "vision_pixel_values",
         ) => (Float32, patches * 588),
-        (ImageLayoutKind::Bracketed, "vision_pixel_values") => (Float32, patches * 1176),
+        (ImageLayoutKind::Bracketed, "vision_pixel_values") => (
+            Float32,
+            patches * if preparation == Some(ImagePreparationKind::Gemma4) { 768 } else { 1176 },
+        ),
         (ImageLayoutKind::Radio, "vision_pixel_values") => (Float32, patches * 768),
         (ImageLayoutKind::Glm, "vision_pixel_values") => (Float32, patches * 1176),
         (ImageLayoutKind::ClassToken, "vision_pixel_values") => (Float32, patches * 1200),
@@ -91,6 +96,12 @@ pub(crate) fn prepare(
     i32::try_from(destination_feature_offset).map_err(|_| "vision feature offset exceeds int32")?;
     match config.contract.frontend.image_layout
         .ok_or("image layout is not prepared")? {
+        ImageLayoutKind::Bracketed
+            if config.contract.frontend.image_preparation
+                == Some(crate::model::contract::ImagePreparationKind::Gemma4) =>
+        {
+            gemma4(config, handle, images, image, destination_feature_offset)
+        }
         ImageLayoutKind::Bracketed => bracketed(config, handle, images, image, destination_feature_offset),
         ImageLayoutKind::Qwen | ImageLayoutKind::Glm => qwen(config, handle, images, image, destination_feature_offset),
         ImageLayoutKind::Mimo => mimo(config, handle, images, image, destination_feature_offset),
@@ -461,6 +472,59 @@ fn step(
     staging.i32("vision_downsample1_indices", 0, first);
     staging.i32("vision_downsample2_indices", 0, second);
     staging.i32("vision_num_features", 0, [geometry.tokens as i32]);
+    Ok(staging)
+}
+
+fn gemma4(
+    config: &ModelConfig,
+    handle: RequestHandle,
+    images: &ProcessedImages,
+    image: usize,
+    destination_feature_offset: usize,
+) -> Result<UploadBatch> {
+    let geometry = images.geometry.get(image).ok_or("missing scheduled image")?;
+    let start: usize = images.geometry[..image].iter().map(|g| g.patches).sum();
+    let end = start + geometry.patches;
+    let [t, h, w] = geometry.grid_thw;
+    if t != 1
+        || h <= 0
+        || w <= 0
+        || h % 3 != 0
+        || w % 3 != 0
+        || (h as usize).checked_mul(w as usize) != Some(geometry.patches)
+        || geometry.tokens != geometry.patches / 9
+        || config.contract.vision.patches_per_feature != 9
+        || geometry.patches
+            > *config.contract.vision.patch_capacities.last().ok_or("missing vision capacities")?
+        || handle.slot as usize >= config.limits.max_active
+        || handle.generation == 0
+        || handle.generation > i64::MAX as u64
+    {
+        return Err("invalid Gemma 4 image extent".into());
+    }
+    let mut staging = UploadBatch::default();
+    staging.put(
+        "vision_pixel_values",
+        0,
+        images.pixel_values.get(start * 768..end * 768)
+            .ok_or("truncated Gemma 4 vision pixels")?
+            .iter()
+            .copied()
+            .flat_map(f32::to_le_bytes),
+    );
+    staging.i64(
+        "vision_position_ids",
+        0,
+        images.position_ids.get(start..end)
+            .ok_or("truncated Gemma 4 vision positions")?
+            .iter()
+            .flatten()
+            .copied(),
+    );
+    staging.i32("vision_cu_seqlens", 0, [0, geometry.patches as i32]);
+    staging.i32("vision_num_patches", 0, [geometry.patches as i32]);
+    staging.i32("vision_num_features", 0, [geometry.tokens as i32]);
+    staging.i32("vision_feature_offset", 0, [destination_feature_offset as i32]);
     Ok(staging)
 }
 

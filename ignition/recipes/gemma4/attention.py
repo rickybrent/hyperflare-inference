@@ -8,6 +8,7 @@ from typing import NamedTuple
 import torch
 
 from ignition.components.collectives import PreparedAllReduce
+from ignition.components.image_sliding_attention import PreparedImageSlidingAttention
 from ignition.components.linear import QuantizedProjection, UnquantizedProjection
 from ignition.components.paged_attention import PreparedPagedAttention, PreparedPagedKVWriter
 from ignition.components.parallel import TensorParallelShard
@@ -82,6 +83,7 @@ class PreparedAttention:
         cache_metadata,
         unit_scale: torch.Tensor,
         k_descale: torch.Tensor,
+        image_token: int | None = None,
     ):
         self.layer = layer
         self.config = config
@@ -142,6 +144,7 @@ class PreparedAttention:
             else:
                 self.v_raw = self.k_raw
 
+        self.image_attention = None
         if self.is_sliding:
             key_cache, value_cache = pool.attention(layer, config, shard=shard)
             self.writer = None
@@ -178,6 +181,26 @@ class PreparedAttention:
                 k_descale=k_descale,
                 v_descale=unit_scale,
             )
+            if mode == "prefill" and image_token is not None:
+                self.image_span_end = zeros("image_span_end", (tokens,), dtype=torch.int32)
+                self.row_request = zeros("row_request", (tokens,), dtype=torch.int32)
+                self.image_attention = PreparedImageSlidingAttention(
+                    self.q,
+                    key_cache,
+                    value_cache,
+                    metadata.page_table,
+                    metadata.positions,
+                    self.image_span_end,
+                    self.row_request,
+                    self.attended.view(tokens, self.heads, self.dim),
+                    window=config.sliding_window,
+                    k_descale=k_descale,
+                    v_descale=unit_scale,
+                    session=session,
+                    workspace=workspace,
+                    name=name + ".image_attention",
+                    tuning_page_count=int(pool.memory_capacity[1].item()),
+                )
         else:
             key_cache, value_lo_cache, value_hi_cache = pool.attention(layer, config, shard=shard)
             half_dim = self.dim // 2
@@ -288,17 +311,20 @@ class PreparedAttention:
                 self.attention = self.attention.functional(
                     session=session, page_table=None, cache_seqlens=None, cu_seqlens_q=None
                 )
+        if self.image_attention is not None:
+            self.image_attention = self.image_attention.functional(session=session)
         for field in ("attention_lo", "attention_hi"):
             operation = getattr(self, field, None)
             if operation is not None:
                 setattr(self, field, operation.functional(session=session, page_table=None,
                     cache_seqlens=None, cu_seqlens_q=None))
         for field in ("q_raw", "q", "attended", "partial_output", "output", "k_raw", "key",
-                      "v_raw", "value", "value_lo", "value_hi", "attended_lo", "attended_hi"):
+                      "v_raw", "value", "value_lo", "value_hi", "attended_lo", "attended_hi",
+                      "image_span_end", "row_request"):
             if hasattr(self, field):
                 setattr(self, field, None)
 
-    def __call__(self, source, cos, sin, *, metadata, cache_metadata):
+    def __call__(self, source, cos, sin, *, metadata, cache_metadata, image_span_end=None, row_request=None):
         tokens = source.shape[0]
         raw = self.q_proj(source)
         q = rms_norm(raw.view(tokens, self.heads, self.dim), self.q_norm, self.eps)
@@ -320,6 +346,15 @@ class PreparedAttention:
                          cu_seqlens_q=metadata.query_start_loc)
         if self.attention is not None:
             attended = self.attention(query, **arguments)
+            if self.image_attention is not None:
+                attended = self.image_attention(
+                    query,
+                    attended,
+                    page_table=metadata.page_table,
+                    positions=metadata.positions,
+                    image_span_end=image_span_end,
+                    row_request=row_request,
+                )
         else:
             lo = self.attention_lo(query, **arguments)
             hi = self.attention_hi(query, **arguments)

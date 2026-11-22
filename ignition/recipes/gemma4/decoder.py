@@ -9,6 +9,7 @@ import torch
 
 from ignition.components.collectives import PreparedAllReduce
 from ignition.components.embedding import PreparedEmbedding
+from ignition.components.image_sliding_attention import compute_image_sliding_spans
 from ignition.components.paged_resume import PreparedResume
 from ignition.components.parallel import TensorParallelShard
 from ignition.components.vocabulary import PreparedVocabularyProjection
@@ -85,6 +86,7 @@ class PreparedLayer:
         cache_metadata,
         unit_scale: torch.Tensor,
         k_descale: torch.Tensor,
+        image_token: int | None = None,
     ):
         self.index = index
         self.config = config
@@ -122,6 +124,7 @@ class PreparedLayer:
             cache_metadata=cache_metadata,
             unit_scale=unit_scale,
             k_descale=k_descale,
+            image_token=image_token,
         )
 
         self.gate_out = zeros("gate_out", (tokens, inter))
@@ -204,10 +207,29 @@ class PreparedLayer:
             if hasattr(self, field):
                 setattr(self, field, None)
 
-    def __call__(self, hidden_states, cos, sin, ple_input=None, *, metadata, cache_metadata):
+    def __call__(
+        self,
+        hidden_states,
+        cos,
+        sin,
+        ple_input=None,
+        *,
+        metadata,
+        cache_metadata,
+        image_span_end=None,
+        row_request=None,
+    ):
         residual = hidden_states
         normalized = rms_norm(residual, self.input_layernorm, self.eps)
-        attn_out = self.self_attn(normalized, cos, sin, metadata=metadata, cache_metadata=cache_metadata)
+        attn_out = self.self_attn(
+            normalized,
+            cos,
+            sin,
+            metadata=metadata,
+            cache_metadata=cache_metadata,
+            image_span_end=image_span_end,
+            row_request=row_request,
+        )
         hidden_states = residual + rms_norm(attn_out, self.post_attention_layernorm, self.eps)
         residual = hidden_states
         normalized = rms_norm(residual, self.pre_feedforward_layernorm, self.eps)
@@ -257,12 +279,15 @@ class PreparedDecoder:
         coordinator=None,
         vocabulary_runtime=None,
         scoring=None,
+        vision=None,
     ):
         self.weights = weights
         self.scratch = scratch
         self.metadata = metadata
         self.pool = pool
         self.auxiliary = None
+        self.vision = vision if mode == "prefill" else None
+        self.image_token = None if self.vision is None else self.vision.image_token
         config = weights.config
         self.config = config
         self.eps = config.rms_norm_eps
@@ -334,6 +359,7 @@ class PreparedDecoder:
                     cache_metadata=self.cache_metadata,
                     unit_scale=unit_scale,
                     k_descale=descale,
+                    image_token=self.image_token,
                 )
             )
 
@@ -387,6 +413,12 @@ class PreparedDecoder:
         full_cos, full_sin = f_emb.cos().bfloat16(), f_emb.sin().bfloat16()
 
         hidden = self.embedding(token_ids=m.token_ids, num_rows=m.live_counts[:1]) * self.embed_scale
+        image_span_end = row_request = None
+        if self.vision is not None:
+            self.vision.inject(m, hidden)
+            image_span_end, row_request = compute_image_sliding_spans(
+                m.token_ids, m.positions, m.query_start_loc, self.image_token
+            )
 
         ple_inputs = None
         if self.ple_embedding is not None:
@@ -404,7 +436,16 @@ class PreparedDecoder:
         for index, layer in enumerate(self.layers):
             cos, sin = (sliding_cos, sliding_sin) if layer.is_sliding else (full_cos, full_sin)
             ple_layer = None if ple_inputs is None else ple_inputs[:, index, :]
-            hidden = layer(hidden, cos, sin, ple_layer, metadata=m, cache_metadata=cache_metadata)
+            hidden = layer(
+                hidden,
+                cos,
+                sin,
+                ple_layer,
+                metadata=m,
+                cache_metadata=cache_metadata,
+                image_span_end=image_span_end,
+                row_request=row_request,
+            )
 
         normalized = rms_norm(hidden, self.weights.norm, self.eps)
         if self.scoring is not None:
