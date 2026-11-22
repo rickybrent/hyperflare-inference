@@ -439,6 +439,8 @@ pub(super) fn vision_json(
             Profile::Radio(_) => json!({"profile": "radio"}),
             Profile::PatchMerge(c) => json!({"profile": "patch_merge", "patch_size": c.patch_size,
                 "min_pixels": c.min_pixels, "max_pixels": c.max_pixels}),
+            Profile::Gemma4(c) => json!({"profile": "gemma4", "patch_size": c.patch_size,
+                "pooling_kernel_size": c.pooling_kernel_size, "max_soft_tokens": c.max_soft_tokens}),
             Profile::Glm(_) => json!({"profile": "glm"}),
             Profile::PaddedGrid(_) => json!({"profile": "padded_grid"}),
         }

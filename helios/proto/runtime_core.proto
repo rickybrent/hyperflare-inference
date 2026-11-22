@@ -372,6 +372,7 @@ enum ImagePreparationKind {
   GLM_IMAGE_PREPARATION = 8;
   PATCH_MERGE_IMAGE_PREPARATION = 9;
   PADDED_GRID_IMAGE_PREPARATION = 10;
+  GEMMA4_IMAGE_PREPARATION = 11;
 }
 enum ImageLayoutKind {
   IMAGE_LAYOUT_UNSPECIFIED = 0;
@@ -507,6 +508,7 @@ message ImageSettings {
     Empty glm = 8;
     PatchMergeImageSettings patch_merge = 9;
     Empty padded_grid = 10;
+    Gemma4ImageSettings gemma4 = 11;
   }
 }
 message PatchMergeImageSettings {
@@ -518,6 +520,14 @@ message PatchMergeImageSettings {
   string image_token = 6;
   string start_token = 7;
   string end_token = 8;
+}
+message Gemma4ImageSettings {
+  uint32 patch_size = 1;
+  uint32 pooling_kernel_size = 2;
+  uint32 max_soft_tokens = 3;
+  string image_token = 4;
+  string start_token = 5;
+  string end_token = 6;
 }
 message DeepseekRowMajorImageSettings {
   uint64 min_pixels = 1;

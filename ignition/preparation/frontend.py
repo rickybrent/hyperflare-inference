@@ -110,6 +110,31 @@ def image_settings(config, model, profile, qwen_model_type="qwen4_exp"):
         _expected(model["vision_config"], {"native_patch_size": 20, "adapter_merge_size": 2,
             "posemb_grid_size": 32, "temporal_patch_size": 2}, "padded-grid vision configuration")
         return {"padded_grid": {}}
+    if profile == "gemma4":
+        _expected(config, {"processor_class": "Gemma4Processor"}, "Gemma 4 processor")
+        image = config["image_processor"]
+        _expected(image, {"image_processor_type": "Gemma4ImageProcessor", "patch_size": 16,
+            "pooling_kernel_size": 3, "do_resize": True, "do_rescale": True,
+            "do_normalize": False, "image_mean": [0.0] * 3, "image_std": [1.0] * 3},
+            "Gemma 4 image processor")
+        optional = {"resample": 3, "rescale_factor": 1 / 255, "do_convert_rgb": True}
+        _expected(image, {key: value for key, value in optional.items() if key in image},
+            "Gemma 4 image processor")
+        if image.get("max_soft_tokens") not in (70, 140, 280, 560, 1120):
+            raise ValueError("unsupported Gemma 4 max_soft_tokens")
+        _expected(model, {"model_type": "gemma4"}, "Gemma 4 model configuration")
+        _expected(model["vision_config"], {"model_type": "gemma4_vision", "patch_size": 16,
+            "pooling_kernel_size": 3, "num_hidden_layers": 27, "hidden_size": 1152,
+            "num_attention_heads": 16, "head_dim": 72, "intermediate_size": 4304},
+            "Gemma 4 vision configuration")
+        return {"gemma4": dict(
+            patch_size=16,
+            pooling_kernel_size=3,
+            max_soft_tokens=image["max_soft_tokens"],
+            image_token="<|image|>",
+            start_token="<|image>",
+            end_token="<image|>",
+        )}
     if profile == "glm":
         _expected(config, {"processor_class": "Glm5NextProcessor"}, "GLM processor")
         image = config["image_processor"]
