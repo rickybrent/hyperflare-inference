@@ -157,16 +157,18 @@ def _validate_trailing(Sources, Destinations, Operations, Expected, Count, Error
 @triton.jit
 def _copy_rows(Backing, Sources, Destinations, Operations, Count, Errors,
                ROW_BYTES: tl.constexpr, BLOCK: tl.constexpr, EXCLUDED: tl.constexpr):
-    tile, row = tl.program_id(0), tl.program_id(1)
+    row = tl.program_id(0)
     source, destination = tl.load(Sources + row), tl.load(Destinations + row)
     copying = tl.load(Operations + row) == 0
     active = (row < tl.load(Count)) & (tl.load(Errors + row) == 0)
-    index = tile * BLOCK + tl.arange(0, BLOCK)
-    mask = active & (index < ROW_BYTES)
-    for span in tl.static_range(len(EXCLUDED)):
-        mask &= (index < EXCLUDED[span][0]) | (index >= EXCLUDED[span][1])
-    value = tl.load(Backing + source * ROW_BYTES + index, mask & copying, other=0)
-    tl.store(Backing + destination * ROW_BYTES + index, value, mask)
+    step = tl.num_programs(1) * BLOCK
+    for offset in range(tl.program_id(1) * BLOCK, ROW_BYTES, step):
+        index = offset + tl.arange(0, BLOCK)
+        mask = active & (index < ROW_BYTES)
+        for span in tl.static_range(len(EXCLUDED)):
+            mask &= (index < EXCLUDED[span][0]) | (index >= EXCLUDED[span][1])
+        value = tl.load(Backing + source * ROW_BYTES + index, mask & copying, other=0)
+        tl.store(Backing + destination * ROW_BYTES + index, value, mask)
 
 
 @triton.jit
@@ -298,7 +300,8 @@ class PreparedStateTransfer:
         self._validate = _compile(_validate, self.validate_args, (self.capacity, 1, 1))
         if self.trailing_validation_args is not None:
             self._trailing_validate = _compile(_validate_trailing, self.trailing_validation_args, (self.capacity, 1, 1))
-        self._copies = [_compile(_copy_rows, self.row_args, (triton.cdiv(self.pool.layout.row_bytes, 4096), self.capacity, 1))]
+        tiles = triton.cdiv(self.pool.layout.row_bytes, 4096)
+        self._copies = [_compile(_copy_rows, self.row_args, (self.capacity, min(tiles, 32768), 1))]
         for args in self.page_args:
             self._copies.append(_compile(_copy_pages, args, (self.capacity, args[0].shape[0], triton.cdiv(args[12], 1024))))
 
