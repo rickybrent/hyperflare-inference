@@ -189,6 +189,7 @@ impl PreparedImageInput {
             Profile::Radio => 768,
             Profile::Glm => 1176,
             Profile::PaddedGrid => super::padded_grid::FEATURES,
+            Profile::Gemma4(_) => 768,
             _ => 588,
         };
         let patches = self.geometry.patches;
@@ -357,6 +358,14 @@ mod tests {
             ImageSettings::Step {},
             ImageSettings::Radio {},
             ImageSettings::PaddedGrid {},
+            ImageSettings::Gemma4(crate::frontend::images::Gemma4ImageSettings {
+                patch_size: 16,
+                pooling_kernel_size: 3,
+                max_soft_tokens: 280,
+                image_token: "<|image|>".into(),
+                start_token: "<|image>".into(),
+                end_token: "<image|>".into(),
+            }),
         ]
     }
 

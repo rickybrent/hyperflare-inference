@@ -134,6 +134,21 @@ pub fn prepare_image_inputs(
             feature_offset += geometry.tokens;
             expansion_offset += additional;
         }
+        if prepared.data.spans.is_empty()
+            && config
+                .contract
+                .frontend
+                .image_tokens
+                .as_ref()
+                .and_then(|layout| layout.span.as_ref())
+                .is_some()
+        {
+            prepared.data.spans = prepared
+                .conditioned_inputs
+                .iter()
+                .map(|input| input.token_span.clone())
+                .collect();
+        }
     }
     super::validate_prompt_data(config, &prepared.tokens, &prepared.data)?;
     validate_conditioned_inputs(config, &prepared.tokens, &prepared.data, &prepared.conditioned_inputs)?;

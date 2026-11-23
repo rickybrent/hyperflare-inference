@@ -93,6 +93,7 @@ impl Inputs {
                                 layout,
                                 &binding.tensor,
                                 graph.token_capacity,
+                                config.contract.frontend.image_preparation,
                             )?;
                             if buffer.dtype != dtype || elements < minimum {
                                 return Err(
