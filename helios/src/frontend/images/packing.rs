@@ -13,8 +13,17 @@ use crate::{
     scheduler::RequestHandle,
 };
 
+fn bracketed_patch_geometry(patches_per_feature: usize) -> Result<(i64, usize)> {
+    match patches_per_feature {
+        4 => Ok((2, 1176)),
+        9 => Ok((3, 768)),
+        _ => Err("unsupported bracketed patches_per_feature".into()),
+    }
+}
+
 pub(crate) fn tensor_layout(
     kind: ImageLayoutKind,
+    patches_per_feature: usize,
     name: &str,
     patches: usize,
 ) -> Result<(Dtype, usize)> {
@@ -27,7 +36,10 @@ pub(crate) fn tensor_layout(
             ImageLayoutKind::Deepseek | ImageLayoutKind::DeepseekRowMajor | ImageLayoutKind::Moonvit | ImageLayoutKind::Step,
             "vision_pixel_values",
         ) => (Float32, patches * 588),
-        (ImageLayoutKind::Bracketed, "vision_pixel_values") => (Float32, patches * 1176),
+        (ImageLayoutKind::Bracketed, "vision_pixel_values") => {
+            let (_, width) = bracketed_patch_geometry(patches_per_feature)?;
+            (Float32, patches * width)
+        }
         (ImageLayoutKind::Radio, "vision_pixel_values") => (Float32, patches * 768),
         (ImageLayoutKind::Glm, "vision_pixel_values") => (Float32, patches * 1176),
         (ImageLayoutKind::ClassToken, "vision_pixel_values") => (Float32, patches * 1200),
@@ -465,19 +477,29 @@ fn step(
 }
 
 fn bracketed(config: &ModelConfig, handle: RequestHandle, images: &ProcessedImages, image: usize, destination_feature_offset: usize) -> Result<UploadBatch> {
+    let patches_per_feature = config.contract.vision.patches_per_feature;
+    let (merge_side, patch_width) = bracketed_patch_geometry(patches_per_feature)?;
     let geometry = images.geometry.get(image).ok_or("missing scheduled image")?;
     let start: usize = images.geometry[..image].iter().map(|g| g.patches).sum();
     let end = start + geometry.patches;
     let [t, h, w] = geometry.grid_thw;
-    if t != 1 || h <= 0 || w <= 0 || h%2 != 0 || w%2 != 0
+    if t != 1 || h <= 0 || w <= 0 || h % merge_side != 0 || w % merge_side != 0
         || (h as usize).checked_mul(w as usize) != Some(geometry.patches)
-        || geometry.tokens != geometry.patches/4 || config.contract.vision.patches_per_feature != 4
+        || geometry.tokens.checked_mul(patches_per_feature) != Some(geometry.patches)
         || geometry.patches > *config.contract.vision.patch_capacities.last().ok_or("missing vision capacities")?
         || handle.slot as usize >= config.limits.max_active || handle.generation == 0 || handle.generation > i64::MAX as u64 {
-        return Err("invalid temporal patch-merge image extent".into());
+        return Err("invalid bracketed patch-merge image extent".into());
     }
     let mut staging = UploadBatch::default();
-    staging.put("vision_pixel_values", 0, images.pixel_values.get(start*1176..end*1176).ok_or("truncated vision pixels")?.iter().copied().flat_map(f32::to_le_bytes));
+    staging.put(
+        "vision_pixel_values",
+        0,
+        images.pixel_values.get(start * patch_width..end * patch_width)
+            .ok_or("truncated vision pixels")?
+            .iter()
+            .copied()
+            .flat_map(f32::to_le_bytes),
+    );
     staging.i64("vision_position_ids", 0, images.position_ids.get(start..end).ok_or("truncated vision positions")?.iter().flatten().copied());
     staging.i32("vision_cu_seqlens", 0, [0, geometry.patches as i32]);
     staging.i32("vision_num_patches", 0, [geometry.patches as i32]);
@@ -543,4 +565,22 @@ fn class_token(
     staging.i32("vision_num_features", 0, [geometry.tokens as i32]);
     staging.i32("vision_feature_offset", 0, [destination_feature_offset as i32]);
     Ok(staging)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bracketed_tensor_layout_derives_patch_width_from_patches_per_feature() {
+        assert_eq!(
+            tensor_layout(ImageLayoutKind::Bracketed, 4, "vision_pixel_values", 16).unwrap(),
+            (Dtype::Float32, 16 * 1176),
+        );
+        assert_eq!(
+            tensor_layout(ImageLayoutKind::Bracketed, 9, "vision_pixel_values", 630).unwrap(),
+            (Dtype::Float32, 630 * 768),
+        );
+        assert!(tensor_layout(ImageLayoutKind::Bracketed, 16, "vision_pixel_values", 16).is_err());
+    }
 }

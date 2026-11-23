@@ -164,6 +164,11 @@ pub(super) fn frontend_settings(value: wire::FrontendSettings) -> Result<serde_j
                     "image_mean": config.image_mean, "image_std": config.image_std,
                     "image_token": config.image_token, "start_token": config.start_token, "end_token": config.end_token,
                 }}),
+                Profile::Gemma4(config) => serde_json::json!({"gemma4": {
+                    "patch_size": config.patch_size, "pooling_kernel_size": config.pooling_kernel_size,
+                    "max_soft_tokens": config.max_soft_tokens,
+                    "image_token": config.image_token, "start_token": config.start_token, "end_token": config.end_token,
+                }}),
                 Profile::DeepseekRowMajor(config) => serde_json::json!({"deepseek_row_major": {
                     "min_pixels": config.min_pixels, "max_tokens": config.max_tokens,
                     "max_width_height_ratio": config.max_width_height_ratio,

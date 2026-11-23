@@ -91,6 +91,7 @@ impl Inputs {
                                 .ok_or("image tensor has no prepared layout")?;
                             let (dtype, minimum) = crate::frontend::images::packing::tensor_layout(
                                 layout,
+                                config.contract.vision.patches_per_feature,
                                 &binding.tensor,
                                 graph.token_capacity,
                             )?;

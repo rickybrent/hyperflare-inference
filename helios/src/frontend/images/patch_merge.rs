@@ -7,56 +7,29 @@
 
 use super::*;
 
+/// Start/feature/end token envelope shared by enveloped image layouts.
 #[derive(Clone)]
-pub(super) struct Processor {
-    pub(super) patches: patches::PatchProcessor,
+pub(super) struct Envelope {
     image_token: String,
     start_token: String,
     end_token: String,
 }
 
-impl Processor {
-    pub(super) fn load(settings: PatchMergeImageSettings, limits: ImageLimits) -> Result<Self> {
-        if settings.patch_size != 14
-            || settings.min_pixels == 0
-            || settings.max_pixels < settings.min_pixels
-            || settings.image_mean.iter().any(|x| !x.is_finite())
-            || settings
-                .image_std
-                .iter()
-                .any(|x| !x.is_finite() || *x <= 0.)
-            || [
-                &settings.image_token,
-                &settings.start_token,
-                &settings.end_token,
-            ]
+impl Envelope {
+    pub(super) fn load(image_token: String, start_token: String, end_token: String) -> Result<Self> {
+        if [&image_token, &start_token, &end_token]
             .iter()
             .any(|s| s.is_empty())
-            || settings.image_token == settings.start_token
-            || settings.image_token == settings.end_token
-            || settings.start_token == settings.end_token
+            || image_token == start_token
+            || image_token == end_token
+            || start_token == end_token
         {
-            return Err("invalid temporal patch-merge image settings".into());
+            return Err("invalid image envelope tokens".into());
         }
-        Ok(Self {
-            patches: patches::PatchProcessor {
-                limits,
-                patch_size: settings.patch_size,
-                min_pixels: settings.min_pixels,
-                max_pixels: settings.max_pixels,
-                normalization: patches::Normalization::ScaledChannel {
-                    mean: settings.image_mean,
-                    std: settings.image_std,
-                },
-                resize: resize::resize,
-            },
-            image_token: settings.image_token,
-            start_token: settings.start_token,
-            end_token: settings.end_token,
-        })
+        Ok(Self { image_token, start_token, end_token })
     }
 
-    pub(super) fn expand_prompt(
+    pub(super) fn expand(
         &self,
         frontend: &Frontend,
         prompt_token_ids: &[u32],
@@ -104,6 +77,56 @@ impl Processor {
             mm_token_type_ids,
             rope_delta: 0,
         })
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct Processor {
+    pub(super) patches: patches::PatchProcessor,
+    envelope: Envelope,
+}
+
+impl Processor {
+    pub(super) fn load(settings: PatchMergeImageSettings, limits: ImageLimits) -> Result<Self> {
+        if settings.patch_size != 14
+            || settings.min_pixels == 0
+            || settings.max_pixels < settings.min_pixels
+            || settings.image_mean.iter().any(|x| !x.is_finite())
+            || settings
+                .image_std
+                .iter()
+                .any(|x| !x.is_finite() || *x <= 0.)
+        {
+            return Err("invalid temporal patch-merge image settings".into());
+        }
+        let envelope = Envelope::load(
+            settings.image_token,
+            settings.start_token,
+            settings.end_token,
+        )?;
+        Ok(Self {
+            patches: patches::PatchProcessor {
+                limits,
+                patch_size: settings.patch_size,
+                min_pixels: settings.min_pixels,
+                max_pixels: settings.max_pixels,
+                normalization: patches::Normalization::ScaledChannel {
+                    mean: settings.image_mean,
+                    std: settings.image_std,
+                },
+                resize: resize::resize,
+            },
+            envelope,
+        })
+    }
+
+    pub(super) fn expand_prompt(
+        &self,
+        frontend: &Frontend,
+        prompt_token_ids: &[u32],
+        images: &ProcessedImages,
+    ) -> Result<ImagePrompt> {
+        self.envelope.expand(frontend, prompt_token_ids, images)
     }
 }
 
