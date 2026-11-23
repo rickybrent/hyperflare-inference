@@ -16,6 +16,12 @@ from .capacity import MAX_CONCURRENCY
 from .sampling import _check_tensor, _compile
 from .state import StateStorage
 
+_COPY_BLOCK = 4096
+_PAGE_BLOCK = 1024
+# CUDA caps gridDim.y at 65,535 across all compute capabilities; rows above
+# 65,535 * _COPY_BLOCK (256 MiB - 4 KiB) stride tiles along program_id(1).
+_MAX_GRID_Y = 65_535
+
 
 def _pointer_table(values, device):
     table = persistent_empty((len(values), 2), torch.int64, device)
@@ -157,16 +163,18 @@ def _validate_trailing(Sources, Destinations, Operations, Expected, Count, Error
 @triton.jit
 def _copy_rows(Backing, Sources, Destinations, Operations, Count, Errors,
                ROW_BYTES: tl.constexpr, BLOCK: tl.constexpr, EXCLUDED: tl.constexpr):
-    row, tile = tl.program_id(0), tl.program_id(1)
+    row = tl.program_id(0)
     source, destination = tl.load(Sources + row), tl.load(Destinations + row)
     copying = tl.load(Operations + row) == 0
     active = (row < tl.load(Count)) & (tl.load(Errors + row) == 0)
-    index = tile * BLOCK + tl.arange(0, BLOCK)
-    mask = active & (index < ROW_BYTES)
-    for span in tl.static_range(len(EXCLUDED)):
-        mask &= (index < EXCLUDED[span][0]) | (index >= EXCLUDED[span][1])
-    value = tl.load(Backing + source * ROW_BYTES + index, mask & copying, other=0)
-    tl.store(Backing + destination * ROW_BYTES + index, value, mask)
+    step = tl.num_programs(1) * BLOCK
+    for offset in range(tl.program_id(1) * BLOCK, ROW_BYTES, step):
+        index = offset + tl.arange(0, BLOCK)
+        mask = active & (index < ROW_BYTES)
+        for span in tl.static_range(len(EXCLUDED)):
+            mask &= (index < EXCLUDED[span][0]) | (index >= EXCLUDED[span][1])
+        value = tl.load(Backing + source * ROW_BYTES + index, mask & copying, other=0)
+        tl.store(Backing + destination * ROW_BYTES + index, value, mask)
 
 
 @triton.jit
@@ -228,6 +236,8 @@ class PreparedStateTransfer:
             raise ValueError("state transfers require CUDA null/live/snapshot storage")
         if type(page_tokens) is not int or page_tokens <= 0:
             raise ValueError("state transfers require positive physical page size")
+        if pool.layout.row_bytes > (1 << 31) - 1 - _MAX_GRID_Y * _COPY_BLOCK:
+            raise ValueError("state transfer row_bytes exceeds the strided copy offset range")
         for name in commands.__dataclass_fields__:
             dtype = torch.int32 if name in ("operation", "num_ops", "errors") else torch.int64
             _check_tensor(getattr(commands, name), (1,) if name == "num_ops" else (self.capacity,), dtype, device, name)
@@ -277,15 +287,15 @@ class PreparedStateTransfer:
         self.validate_args = (c.source_slots, c.destination_slots, c.operation, c.expected_consumed, c.num_ops,
             c.errors, consumed, tables, c.request_slots, state_rows, requests.consumed_tokens, requests.consumed_tokens.stride(0), pool.memory_capacity, consumed.stride(0), tables.shape[1], page_tokens, self.capacity)
         self.row_args = (pool.backing, c.source_slots, c.destination_slots, c.operation, c.num_ops, c.errors,
-                         pool.layout.row_bytes, 4096,
+                         pool.layout.row_bytes, _COPY_BLOCK,
                          tuple((region.offset, region.offset + region.nbytes)
                                for name in excluded_regions for region in (pool.layout.region(name),)))
         self.page_args = [(pointer, pool.backing, tables, c.source_slots, c.destination_slots, c.operation,
-            c.expected_consumed, c.num_ops, c.errors, c.request_slots, state_rows, pool.layout.row_bytes, size, tables.shape[1], page_tokens, 1024, self.capacity)
+            c.expected_consumed, c.num_ops, c.errors, c.request_slots, state_rows, pool.layout.row_bytes, size, tables.shape[1], page_tokens, _PAGE_BLOCK, self.capacity)
             for size, pointer in self.pointers.items()]
         self.page_args.extend((pointer, pool.backing, trailing_tables, c.source_slots, c.destination_slots, c.operation,
             c.expected_consumed, c.num_ops, c.errors, c.request_slots, state_rows, pool.layout.row_bytes, size, tables.shape[1], page_tokens,
-            1024, self.capacity, part) for size, pointer in self.trailing_pointers.items() for part in (0, 1))
+            _PAGE_BLOCK, self.capacity, part) for size, pointer in self.trailing_pointers.items() for part in (0, 1))
         self.trailing_validation_args = None if not trailing_pages else (
             c.source_slots, c.destination_slots, c.operation, c.expected_consumed, c.num_ops, c.errors,
             trailing_tables, c.request_slots, state_rows, tables.shape[1], pool.memory_capacity, page_tokens, self.capacity)
@@ -298,9 +308,11 @@ class PreparedStateTransfer:
         self._validate = _compile(_validate, self.validate_args, (self.capacity, 1, 1))
         if self.trailing_validation_args is not None:
             self._trailing_validate = _compile(_validate_trailing, self.trailing_validation_args, (self.capacity, 1, 1))
-        self._copies = [_compile(_copy_rows, self.row_args, (self.capacity, triton.cdiv(self.pool.layout.row_bytes, 4096), 1))]
+        tiles = triton.cdiv(self.pool.layout.row_bytes, _COPY_BLOCK)
+        self._copies = [_compile(_copy_rows, self.row_args, (self.capacity, min(tiles, _MAX_GRID_Y), 1))]
         for args in self.page_args:
-            self._copies.append(_compile(_copy_pages, args, (self.capacity, args[0].shape[0], triton.cdiv(args[12], 1024))))
+            # args[12] is per-page byte size (one physical KV page), not row_bytes.
+            self._copies.append(_compile(_copy_pages, args, (self.capacity, args[0].shape[0], triton.cdiv(args[12], _PAGE_BLOCK))))
 
     def validate(self):
         if self._validate is None:

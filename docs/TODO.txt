@@ -346,3 +346,6 @@
     on SM103 GPUs alongside --row-shard-prefill. Close each target when
     tensor-parallel export with replicated attention weights and native flare
     run serving pass on that hardware and transport.
+
+[ ] Guard or stride the 65,535 * 1024 (~64 MiB/uint8 row) gridDim.y ceiling
+    in ignition/components/state.py row kernels.
