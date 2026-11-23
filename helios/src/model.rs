@@ -48,6 +48,9 @@ pub struct VisionCapabilities {
     pub max_images: usize,
     pub patches_per_feature: usize,
     pub patch_capacities: Vec<usize>,
+    /// Float32 elements per vision patch; zero inherits the layout's legacy width.
+    #[cfg_attr(any(feature = "frontend", feature = "runtime-core"), serde(default))]
+    pub patch_features: usize,
 }
 
 impl VisionCapabilities {
@@ -58,11 +61,22 @@ impl VisionCapabilities {
             max_images: 0,
             patches_per_feature: 0,
             patch_capacities: Vec::new(),
+            patch_features: 0,
         }
     }
 
     pub fn enabled(&self) -> bool {
         self.max_images > 0
+    }
+
+    /// Per-patch float width for `ImageLayoutKind::Bracketed`; `0` inherits the legacy
+    /// temporal-merge width (`3 * 2 * 14² = 1176`).
+    pub fn bracketed_patch_features(&self) -> usize {
+        if self.patch_features != 0 {
+            self.patch_features
+        } else {
+            1176
+        }
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -72,6 +86,7 @@ impl VisionCapabilities {
         if self.feature_slots == 0
             || self.feature_slots > crate::execution::REQUEST_LANES
             || self.patches_per_feature == 0
+            || !self.patch_features.is_multiple_of(3)
             || self.max_images == 0
             || self.features_per_request == 0
             || self.patch_capacities.is_empty()

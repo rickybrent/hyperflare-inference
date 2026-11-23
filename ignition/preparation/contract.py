@@ -108,8 +108,14 @@ def prefix_boundary(roles, *, append_role=None, minimum_messages=1, required_sta
 
 def model_contract(*, vocabulary, input_vocabulary=None, vision=None, page_tokens, page_tables, graphs, frontend,
                    regions, codec_layout=None):
+    """Build a version-3 `ModelContract` dict.
+
+    `Bracketed` vision recipes whose per-patch float width differs from the legacy `1176`
+    default (for example `768` for Gemma 4) must set `vision["patch_features"]`.
+    """
     return dict(version=3, vocabulary=vocabulary, input_vocabulary=input_vocabulary or vocabulary,
-        vision={"feature_slots": 0, **(vision or dict(features_per_request=0, max_images=0, patches_per_feature=0, patch_capacities=[]))},
+        vision={"feature_slots": 0, "patch_features": 0,
+                **(vision or dict(features_per_request=0, max_images=0, patches_per_feature=0, patch_capacities=[]))},
         cache=dict(page_tokens=page_tokens, page_tables=page_tables, regions=regions,
                    **({"codec_layout": codec_layout} if codec_layout else {})), graphs=graphs, frontend=frontend)
 

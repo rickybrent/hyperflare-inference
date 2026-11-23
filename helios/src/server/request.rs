@@ -780,7 +780,8 @@ mod tests {
         let geometry = initial.geometry(1075, 1521).unwrap();
         let vision = crate::model::VisionCapabilities { feature_slots: 1, max_images: 1,
             features_per_request: geometry.tokens, patches_per_feature: 9,
-            patch_capacities: vec![geometry.patches] };
+            patch_capacities: vec![geometry.patches],
+            patch_features: 0, };
         let context = 2 * geometry.tokens + 64;
         let limits = crate::server::config::image_limits(&vision, context).unwrap();
         let processor = ImageProcessor::load(ImageSettings::Deepseek4 {}, limits).unwrap();

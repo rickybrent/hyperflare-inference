@@ -285,6 +285,7 @@ fn image_admission_queues_excess_images_and_admits_text() {
         max_images: 1,
         patches_per_feature: 4,
         patch_capacities: vec![256],
+        patch_features: 0,
     };
     let vision_contract: crate::model::contract::PreparedContract =
         serde_json::from_str(include_str!("../../../tests/support/contracts/qwen38.json")).unwrap();
@@ -5405,6 +5406,7 @@ fn host_prefix_selects_whole_required_images_and_compacts_feature_indices() {
             max_images: 4,
             patches_per_feature: 4,
             patch_capacities: vec![256],
+            patch_features: 0,
         };
         fixture.config.contract.frontend =
             serde_json::from_str::<crate::model::contract::PreparedContract>(include_str!(
@@ -5471,6 +5473,7 @@ fn failed_host_restore_replans_all_images_from_the_shallower_prefix() {
         max_images: 4,
         patches_per_feature: 4,
         patch_capacities: vec![256],
+        patch_features: 0,
     };
     fixture.config.contract.frontend =
         serde_json::from_str::<crate::model::contract::PreparedContract>(include_str!(
@@ -5539,6 +5542,7 @@ fn image_materialization_failure_retires_only_its_request() {
         max_images: 4,
         patches_per_feature: 4,
         patch_capacities: vec![256],
+        patch_features: 0,
     };
     fixture.config.contract.frontend =
         serde_json::from_str::<crate::model::contract::PreparedContract>(include_str!(
@@ -5586,6 +5590,7 @@ fn prepared_image_window_stays_global_until_pack_or_cancellation() {
         max_images: 4,
         patches_per_feature: 4,
         patch_capacities: vec![256],
+        patch_features: 0,
     };
     fixture.config.contract.frontend = serde_json::from_str::<crate::model::PreparedContract>(
         include_str!("../../../tests/support/contracts/qwen38.json"),
@@ -5655,6 +5660,7 @@ fn worker_restores_conditioned_windows_with_fresh_generation_and_unchanged_sampl
         max_images: 4,
         patches_per_feature: 4,
         patch_capacities: vec![256],
+        patch_features: 0,
     };
     fixture.config.contract.frontend = serde_json::from_str::<crate::model::PreparedContract>(
         include_str!("../../../tests/support/contracts/qwen38.json"),

@@ -1,0 +1,256 @@
+{
+  "processor": {
+    "audio_ms_per_token": 40,
+    "audio_seq_length": 750,
+    "feature_extractor": {
+      "dither": 0.0,
+      "feature_extractor_type": "Gemma4AudioFeatureExtractor",
+      "feature_size": 128,
+      "fft_length": 512,
+      "fft_overdrive": false,
+      "frame_length": 320,
+      "hop_length": 160,
+      "input_scale_factor": 1.0,
+      "max_frequency": 8000.0,
+      "mel_floor": 0.001,
+      "min_frequency": 0.0,
+      "padding_side": "right",
+      "padding_value": 0.0,
+      "per_bin_mean": null,
+      "per_bin_stddev": null,
+      "preemphasis": 0.0,
+      "preemphasis_htk_flavor": true,
+      "return_attention_mask": true,
+      "sampling_rate": 16000
+    },
+    "image_processor": {
+      "do_convert_rgb": true,
+      "do_normalize": false,
+      "do_rescale": true,
+      "do_resize": true,
+      "image_mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "image_processor_type": "Gemma4ImageProcessor",
+      "image_seq_length": 280,
+      "image_std": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_soft_tokens": 280,
+      "patch_size": 16,
+      "pooling_kernel_size": 3,
+      "resample": 3,
+      "rescale_factor": 0.00392156862745098
+    },
+    "image_seq_length": 280,
+    "processor_class": "Gemma4Processor",
+    "video_processor": {
+      "do_convert_rgb": true,
+      "do_normalize": true,
+      "do_rescale": true,
+      "do_resize": true,
+      "do_sample_frames": true,
+      "image_mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "image_std": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_soft_tokens": 70,
+      "num_frames": 32,
+      "patch_size": 16,
+      "pooling_kernel_size": 3,
+      "resample": 3,
+      "rescale_factor": 0.00392156862745098,
+      "return_metadata": false,
+      "video_processor_type": "Gemma4VideoProcessor"
+    }
+  },
+  "model": {
+    "vision_config": {
+      "_name_or_path": "",
+      "architectures": null,
+      "attention_bias": false,
+      "attention_dropout": 0.0,
+      "chunk_size_feed_forward": 0,
+      "default_output_length": 280,
+      "dtype": "bfloat16",
+      "global_head_dim": 72,
+      "head_dim": 72,
+      "hidden_activation": "gelu_pytorch_tanh",
+      "hidden_size": 1152,
+      "id2label": {
+        "0": "LABEL_0",
+        "1": "LABEL_1"
+      },
+      "initializer_range": 0.02,
+      "intermediate_size": 4304,
+      "is_encoder_decoder": false,
+      "label2id": {
+        "LABEL_0": 0,
+        "LABEL_1": 1
+      },
+      "max_position_embeddings": 131072,
+      "model_type": "gemma4_vision",
+      "num_attention_heads": 16,
+      "num_hidden_layers": 27,
+      "num_key_value_heads": 16,
+      "output_attentions": false,
+      "output_hidden_states": false,
+      "patch_size": 16,
+      "pooling_kernel_size": 3,
+      "position_embedding_size": 10240,
+      "problem_type": null,
+      "return_dict": true,
+      "rms_norm_eps": 1e-06,
+      "rope_parameters": {
+        "rope_theta": 100.0,
+        "rope_type": "default"
+      },
+      "standardize": true,
+      "use_clipped_linears": false
+    },
+    "model_type": "gemma4",
+    "image_token_id": 258880,
+    "boi_token_id": 255999,
+    "eoi_token_id": 258882
+  },
+  "cases": [
+    {
+      "width": 1,
+      "height": 1,
+      "seed": 0,
+      "max_soft_tokens": 280,
+      "grid": [
+        1,
+        48,
+        48
+      ],
+      "tokens": 256,
+      "patches": 2304,
+      "pixels": "468a4a459772da4e498bc9635d3a9c9b12584490e1edcc1d914ee7df6448d8b2",
+      "positions": "4aad87bbd779207de57f944f92624525222e08c076b6c349f82cb6c98d0b3dcd",
+      "resized": "f0a0e8d753bbee26646b9cedd3cad510258b922274c4085b8da7d4f08e4cca3f"
+    },
+    {
+      "width": 91,
+      "height": 37,
+      "seed": 1,
+      "max_soft_tokens": 280,
+      "grid": [
+        1,
+        30,
+        78
+      ],
+      "tokens": 260,
+      "patches": 2340,
+      "pixels": "5265a89e1fce5478a650d56dfcc96127c30c21d2ea429b44c7af7d8a6682ac18",
+      "positions": "230fe091541f6e013b0d2a81d4db758517641e62625d183f5fe9413084933d38",
+      "resized": "74844bf7eb16d04ff85b2c4e7eb918db8d1aea0e2e302208008904b776dd3c31"
+    },
+    {
+      "width": 672,
+      "height": 672,
+      "seed": 2,
+      "max_soft_tokens": 280,
+      "grid": [
+        1,
+        48,
+        48
+      ],
+      "tokens": 256,
+      "patches": 2304,
+      "pixels": "66294430dcf7320533ade9aa9944cb1e7eefbf0ee969737041c51dc4474242e4",
+      "positions": "4aad87bbd779207de57f944f92624525222e08c076b6c349f82cb6c98d0b3dcd",
+      "resized": "993d71e2a28e4389e225eed5378b03ca1cb6c1056395c8a5b4b31754f594a81a"
+    },
+    {
+      "width": 1008,
+      "height": 672,
+      "seed": 3,
+      "max_soft_tokens": 280,
+      "grid": [
+        1,
+        39,
+        60
+      ],
+      "tokens": 260,
+      "patches": 2340,
+      "pixels": "c5c5fb7fe6d48bd9a3670d89832d4dadb51759666188ecbc3a7429c2bb43e3f9",
+      "positions": "ad2b173f5b91cabb2863a1d545039ab7e22bb7b45309657f92c7e53d079dfb50",
+      "resized": "33cbdc838936699ecaeff512700edf7f6049a87af183bb09f8db7d96f2320808"
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "seed": 4,
+      "max_soft_tokens": 280,
+      "grid": [
+        1,
+        36,
+        66
+      ],
+      "tokens": 264,
+      "patches": 2376,
+      "pixels": "815b779d85aa29f4f7ddb74d47c0b8d73e656897be5d8a45ce74893cbbfd2338",
+      "positions": "e43d86caabf6609fe1ad0ef620caef5581ad7b5c6dbf69f3eb6d55fabf49d773",
+      "resized": "cd2ec808d9fb5ab009b7756729b0befc89c5ff6119ecfbafc25c9f0089907e21"
+    },
+    {
+      "width": 10,
+      "height": 3000,
+      "seed": 5,
+      "max_soft_tokens": 280,
+      "grid": [
+        1,
+        840,
+        3
+      ],
+      "tokens": 280,
+      "patches": 2520,
+      "pixels": "b17b383076944d67f62ccfd2dd998d80daa5be42f2b0ba6bda8f309ff7d21f7b",
+      "positions": "97d697bfd1f692c2e5393ed53d68c05abee541492e4bdc875526318c206ef557",
+      "resized": "0f17928e5360c931dc5c54bb1ebdd50afb7b126dab817e634c8358be87be1fbe"
+    },
+    {
+      "width": 3000,
+      "height": 10,
+      "seed": 6,
+      "max_soft_tokens": 280,
+      "grid": [
+        1,
+        3,
+        840
+      ],
+      "tokens": 280,
+      "patches": 2520,
+      "pixels": "16ef5cbab3d32dd200b95fbe680c28290c914ff65c26619cf7e22155f2118f45",
+      "positions": "2f51f7ce8893690da5ec517147c02d8367bdac99ccadbbe17d564d5a5d338683",
+      "resized": "e39f4eb95590e7ece96dbe9c5ce3d1388ecc7dffe40ac64bfc6bad1a04ae1548"
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "seed": 7,
+      "max_soft_tokens": 1120,
+      "grid": [
+        1,
+        75,
+        132
+      ],
+      "tokens": 1100,
+      "patches": 9900,
+      "pixels": "4ff02c2491f5406ff26c77ad1115bceabc3c03152eb11f183ee5907a2ae016a0",
+      "positions": "76fbdbbe40e17eec69727f75e9de788f773ca33fd7fc83ad7b99c6c32fc79946",
+      "resized": "b411dbb8c91eba7b9db63355c7d63e74102800d8aafa70df989d39ff65ad2d2c"
+    }
+  ]
+}

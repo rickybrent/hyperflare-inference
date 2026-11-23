@@ -51,6 +51,10 @@ fn main() {
                 ".flare.runtime.PersistentWorker.metrics_count",
                 "#[serde(default)]",
             )
+            .field_attribute(
+                ".flare.runtime.VisionCapacity.patch_features",
+                "#[serde(default)]",
+            )
             .compile_protos(&["proto/runtime_core.proto"], &["proto"])
             .expect("compile runtime core protobuf schema");
         // The payload schema imports the execution schema and refers to the generated types

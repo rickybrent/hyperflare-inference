@@ -717,19 +717,28 @@ The `images` feature adds `frontend::images::ImageProcessor` and PNG, JPEG,
 static WebP, and non-animated GIF decoding; it also enables `frontend`. Typed core metadata
 selects the preparation profile and token layout independently. Profiles cover
 Qwen, MiMo, patch-merge, DeepSeek, DeepSeek row-major, Moonvit, Step, RADIO,
-and GLM inputs.
+GLM, padded-grid, and Gemma 4 inputs.
 The Qwen processor uses an RGB8, bicubic-antialias profile with
 16×16 patches, temporal duplication by two, spatial merge by two, a 48×48
 learned position table, and fused normalization `(pixel - 127.5) / 127.5`.
+The Gemma 4 processor uses area-bounded RGB8 bicubic-antialias resize to
+multiples of `patch_size * pooling_kernel_size` (48 px for 16×16 patches and
+3×3 pooling), packs interleaved `(y, x, channel)` float32 patch vectors of width
+`3 * patch_size²` (768) scaled by `1/255`, emits `[x, y]` patch coordinates, and
+reuses the bracketed start/feature/end token envelope; when the prepared
+contract declares `image_tokens.span`, the bracketed layout emits atomic spans
+covering each envelope.
 
-`process` produces packed `pixel_values[N,1536]` float32, image grids `[1,H,W]`,
+For Qwen, `process` produces packed `pixel_values[N,1536]` float32, image grids `[1,H,W]`,
 vision positions `[N,2]` int64, interpolation indices `[N,4]` int64 and weights
-`[N,4]` float32, and per-image cumulative patch offsets int32. Patch features
-are ordered by channel, temporal copy, pixel row, and pixel column; patches
-are ordered by 2×2 spatial merge blocks. `expand_prompt` consumes the rendered
-chat token IDs, expands only control-token image placeholders, and returns
-modality IDs and four unpadded position rows `[text,T,H,W]` plus the mRoPE delta.
-The model scheduler can transpose the last three rows into `[tokens,3]`.
+`[N,4]` float32, and per-image cumulative patch offsets int32 (other profiles
+report their own per-patch width via `ImageProcessor::patch_features()`). Qwen
+patch features are ordered by channel, temporal copy, pixel row, and pixel
+column; patches are ordered by 2×2 spatial merge blocks. `expand_prompt`
+consumes the rendered chat token IDs, expands only control-token image
+placeholders, and returns modality IDs and four unpadded position rows
+`[text,T,H,W]` plus the mRoPE delta. The model scheduler can transpose the last
+three rows into `[tokens,3]`.
 
 Prompt construction describes each image without building its tensors. The
 description includes geometry, semantic identity, token dependency span, and
@@ -795,5 +804,18 @@ cargo run --manifest-path helios/Cargo.toml --features images,test-tools --offli
 The qualifier accepts an optional third argument for writing mismatching
 native tensor bytes. Fixtures contain fingerprints rather than the full
 100 MiB largest patch tensor; the generator's `--binary-dir` records full
-reference tensors for diagnosis. These checks qualify CPU preparation; vision
+reference tensors for diagnosis.
+
+Gemma 4 fixtures in `tests/frontend/gemma4_images.json` pin Transformers
+`5.23.0`, PyTorch `2.14.1+cu132`, Torchvision `0.29.1+cu132`, and
+`google/gemma-4-31B-it` at revision `842da3794eaa0b77d5f08bae87a17459d91ff475`
+across 8 bit-exact SHA256 cases (`max_soft_tokens` 280 and 1120), regenerated
+with:
+
+```bash
+.venv/bin/python tests/frontend/generate_gemma4_image_fixtures.py \
+  "$SNAPSHOT" tests/frontend/gemma4_images.json
+```
+
+These checks qualify CPU preparation; vision
 graph execution and decoder consumption require separate model integration.

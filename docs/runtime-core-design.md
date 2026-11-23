@@ -181,10 +181,17 @@ Two prepared-contract fields fail validation when absent or out of
 range. `vision` (Protobuf message `VisionCapacity`, Rust type
 `VisionCapabilities`) must decode to a well-formed value: a
 text-only core encodes the explicit all-zero value (`feature_slots`,
-`features_per_request`, `max_images`, and `patches_per_feature` of 0
-with empty `patch_capacities`), and an absent or null `vision` fails
-the contract decode (a null submessage raises `invalid type: null,
-expected struct VisionCapabilities`). Every graph contract also carries
+`features_per_request`, `max_images`, `patches_per_feature`, and
+`patch_features` of 0 with empty `patch_capacities`), and an absent or null
+`vision` fails the contract decode (a null submessage raises
+`invalid type: null, expected struct VisionCapabilities`). For vision cores
+using `ImageLayoutKind::Bracketed`, `patch_features` declares the per-patch
+float width of `vision_pixel_values` (for example `768` for 16×16 RGB Gemma 4
+patches); `0` defaults to the legacy temporal-merge width (`1176`) for existing
+cores. At server bootstrap, Helios also verifies that the loaded image
+processor's patch width, `patches_per_feature`, per-image patch budget, and
+maximum bracketed envelope span agree with the prepared contract and
+`prefill_chunk_size`. Every graph contract also carries
 `embedding_tables`, whose entries index the core's embedding-table
 catalog and are validated against the catalog size at core
 validation: a core that ships no embedding-table resources must
@@ -227,7 +234,9 @@ remains request-controlled.
 chat template, and optional image settings. Qwen image settings contain resize
 area limits, learned-position geometry, and image/video token IDs. MiMo image
 settings contain resize limits and channel normalization. DeepSeek's image profile
-has fixed geometry validated by Ignition. Preparation reads and validates structural
+has fixed geometry validated by Ignition. Gemma 4 image settings contain patch
+and pooling geometry, the soft-token budget, and the validated envelope token
+strings (`image_token`, `start_token`, `end_token`). Preparation reads and validates structural
 checkpoint config files, then exports only these consumed fields. The only frontend
 payload assets are `tokenizer.json` and the Jinja chat template; raw generation,
 tokenizer, processor, and model configuration files are not included.

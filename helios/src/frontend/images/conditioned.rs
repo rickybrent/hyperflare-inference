@@ -184,13 +184,7 @@ impl PreparedImageInput {
 
     fn valid_processed(&self, images: &ProcessedImages) -> bool {
         use super::Profile;
-        let pixel_width = match self.processor.profile {
-            Profile::Qwen(_) | Profile::MiMo(_) => 1536,
-            Profile::Radio => 768,
-            Profile::Glm => 1176,
-            Profile::PaddedGrid => super::padded_grid::FEATURES,
-            _ => 588,
-        };
+        let pixel_width = self.processor.patch_features();
         let patches = self.geometry.patches;
         let interpolation = matches!(
             self.processor.profile,
@@ -357,16 +351,29 @@ mod tests {
             ImageSettings::Step {},
             ImageSettings::Radio {},
             ImageSettings::PaddedGrid {},
+            ImageSettings::Gemma4(crate::frontend::images::Gemma4ImageSettings {
+                patch_size: 16,
+                pooling_kernel_size: 3,
+                max_soft_tokens: 280,
+                image_token: "<|image|>".into(),
+                start_token: "<|image>".into(),
+                end_token: "<image|>".into(),
+            }),
         ]
     }
 
     fn processor(settings: ImageSettings) -> Arc<ImageProcessor> {
+        let patches_per_feature = match &settings {
+            ImageSettings::Gemma4(gemma4) => gemma4.pooling_kernel_size * gemma4.pooling_kernel_size,
+            _ => 1,
+        };
         Arc::new(
             ImageProcessor::load(
                 settings,
                 ImageLimits {
                     max_patches_per_image: 65536,
                     max_total_patches: 65536,
+                    patches_per_feature,
                     ..Default::default()
                 },
             )

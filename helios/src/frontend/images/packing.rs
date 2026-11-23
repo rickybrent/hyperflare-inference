@@ -9,12 +9,21 @@ use super::ProcessedImages;
 use crate::{
     Result,
     execution::Dtype,
-    model::{ModelConfig, contract::ImageLayoutKind, inputs::UploadBatch},
+    model::{ModelConfig, VisionCapabilities, contract::ImageLayoutKind, inputs::UploadBatch},
     scheduler::RequestHandle,
 };
 
+fn square_merge_side(patches_per_feature: usize) -> Result<i64> {
+    let side = patches_per_feature.isqrt();
+    if side == 0 || side * side != patches_per_feature {
+        return Err("bracketed patches_per_feature must be a positive square".into());
+    }
+    Ok(side as i64)
+}
+
 pub(crate) fn tensor_layout(
     kind: ImageLayoutKind,
+    vision: &VisionCapabilities,
     name: &str,
     patches: usize,
 ) -> Result<(Dtype, usize)> {
@@ -27,7 +36,14 @@ pub(crate) fn tensor_layout(
             ImageLayoutKind::Deepseek | ImageLayoutKind::DeepseekRowMajor | ImageLayoutKind::Moonvit | ImageLayoutKind::Step,
             "vision_pixel_values",
         ) => (Float32, patches * 588),
-        (ImageLayoutKind::Bracketed, "vision_pixel_values") => (Float32, patches * 1176),
+        (ImageLayoutKind::Bracketed, "vision_pixel_values") => {
+            square_merge_side(vision.patches_per_feature)?;
+            let width = vision.bracketed_patch_features();
+            let elements = patches
+                .checked_mul(width)
+                .ok_or("vision pixel buffer extent overflows")?;
+            (Float32, elements)
+        }
         (ImageLayoutKind::Radio, "vision_pixel_values") => (Float32, patches * 768),
         (ImageLayoutKind::Glm, "vision_pixel_values") => (Float32, patches * 1176),
         (ImageLayoutKind::ClassToken, "vision_pixel_values") => (Float32, patches * 1200),
@@ -465,19 +481,24 @@ fn step(
 }
 
 fn bracketed(config: &ModelConfig, handle: RequestHandle, images: &ProcessedImages, image: usize, destination_feature_offset: usize) -> Result<UploadBatch> {
+    let patches_per_feature = config.contract.vision.patches_per_feature;
+    let merge_side = square_merge_side(patches_per_feature)?;
+    let patch_width = config.contract.vision.bracketed_patch_features();
     let geometry = images.geometry.get(image).ok_or("missing scheduled image")?;
     let start: usize = images.geometry[..image].iter().map(|g| g.patches).sum();
     let end = start + geometry.patches;
     let [t, h, w] = geometry.grid_thw;
-    if t != 1 || h <= 0 || w <= 0 || h%2 != 0 || w%2 != 0
+    if t != 1 || h <= 0 || w <= 0 || h % merge_side != 0 || w % merge_side != 0
         || (h as usize).checked_mul(w as usize) != Some(geometry.patches)
-        || geometry.tokens != geometry.patches/4 || config.contract.vision.patches_per_feature != 4
+        || geometry.tokens.checked_mul(patches_per_feature) != Some(geometry.patches)
         || geometry.patches > *config.contract.vision.patch_capacities.last().ok_or("missing vision capacities")?
         || handle.slot as usize >= config.limits.max_active || handle.generation == 0 || handle.generation > i64::MAX as u64 {
-        return Err("invalid temporal patch-merge image extent".into());
+        return Err("invalid bracketed image extent".into());
     }
+    let pixel_start = start.checked_mul(patch_width).ok_or("vision pixel offset overflows")?;
+    let pixel_end = end.checked_mul(patch_width).ok_or("vision pixel offset overflows")?;
     let mut staging = UploadBatch::default();
-    staging.put("vision_pixel_values", 0, images.pixel_values.get(start*1176..end*1176).ok_or("truncated vision pixels")?.iter().copied().flat_map(f32::to_le_bytes));
+    staging.put("vision_pixel_values", 0, images.pixel_values.get(pixel_start..pixel_end).ok_or("truncated vision pixels")?.iter().copied().flat_map(f32::to_le_bytes));
     staging.i64("vision_position_ids", 0, images.position_ids.get(start..end).ok_or("truncated vision positions")?.iter().flatten().copied());
     staging.i32("vision_cu_seqlens", 0, [0, geometry.patches as i32]);
     staging.i32("vision_num_patches", 0, [geometry.patches as i32]);
@@ -543,4 +564,252 @@ fn class_token(
     staging.i32("vision_num_features", 0, [geometry.tokens as i32]);
     staging.i32("vision_feature_offset", 0, [destination_feature_offset as i32]);
     Ok(staging)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frontend::images::{
+        DeepseekRowMajorImageSettings, Gemma4ImageSettings, ImageGeometry, ImageLimits,
+        ImageProcessor, ImageSettings, MimoImageSettings, PatchMergeImageSettings,
+        QwenImageSettings,
+    };
+
+    fn bracketed_config(patches_per_feature: usize, patch_features: usize) -> ModelConfig {
+        let mut config = crate::frontend::test_support::model_config(
+            crate::model::testing::metadata(),
+        );
+        config.contract.frontend.image_layout = Some(ImageLayoutKind::Bracketed);
+        config.contract.vision = VisionCapabilities {
+            feature_slots: 1,
+            features_per_request: 1024,
+            max_images: 4,
+            patches_per_feature,
+            patch_capacities: vec![9 * 1024],
+            patch_features,
+        };
+        config
+    }
+
+    #[test]
+    fn bracketed_packs_3x3_metadata_widths_and_rejects_invalid_extents() {
+        let handle = RequestHandle {
+            slot: 0,
+            generation: 1,
+        };
+        for width in [768usize, 588] {
+            let config = bracketed_config(9, width);
+            assert_eq!(
+                tensor_layout(
+                    ImageLayoutKind::Bracketed,
+                    &config.contract.vision,
+                    "vision_pixel_values",
+                    18,
+                )
+                .unwrap(),
+                (Dtype::Float32, 18 * width),
+            );
+            let images = ProcessedImages {
+                pixel_values: (0..18 * width).map(|i| i as f32).collect(),
+                geometry: vec![ImageGeometry {
+                    height: 48,
+                    width: 96,
+                    grid_thw: [1, 3, 6],
+                    patches: 18,
+                    tokens: 2,
+                }],
+                position_ids: (0..18).map(|i| [i as i64 % 6, i as i64 / 6]).collect(),
+                interpolation_indices: vec![],
+                interpolation_weights: vec![],
+                cu_seqlens: vec![0, 18],
+            };
+            let batch = bracketed(&config, handle, &images, 0, 5).unwrap();
+            let uploads = batch.uploads();
+            let pixels = uploads
+                .iter()
+                .find(|entry| entry.buffer == "vision_pixel_values")
+                .unwrap();
+            assert_eq!(pixels.bytes.len(), 18 * width * 4);
+            let truncated = ProcessedImages {
+                pixel_values: vec![0.0; 18 * width - 1],
+                ..images.clone()
+            };
+            assert!(bracketed(&config, handle, &truncated, 0, 0).is_err());
+            let odd_grid = ProcessedImages {
+                geometry: vec![ImageGeometry {
+                    height: 64,
+                    width: 64,
+                    grid_thw: [1, 4, 4],
+                    patches: 16,
+                    tokens: 2,
+                }],
+                ..images
+            };
+            assert!(bracketed(&config, handle, &odd_grid, 0, 0).is_err());
+        }
+        let legacy = bracketed_config(4, 0);
+        assert_eq!(
+            tensor_layout(
+                ImageLayoutKind::Bracketed,
+                &legacy.contract.vision,
+                "vision_pixel_values",
+                16,
+            )
+            .unwrap(),
+            (Dtype::Float32, 16 * 1176),
+        );
+        let non_square = bracketed_config(3, 768);
+        assert!(
+            tensor_layout(
+                ImageLayoutKind::Bracketed,
+                &non_square.contract.vision,
+                "vision_pixel_values",
+                9,
+            )
+            .is_err()
+        );
+        // Non-Bracketed layouts with non-square patches_per_feature remain unaffected.
+        assert_eq!(
+            tensor_layout(
+                ImageLayoutKind::Deepseek,
+                &non_square.contract.vision,
+                "vision_pixel_values",
+                9,
+            )
+            .unwrap(),
+            (Dtype::Float32, 9 * 588),
+        );
+    }
+
+    #[test]
+    fn processor_patch_features_match_tensor_layout_for_every_profile() {
+        let cases: Vec<(ImageSettings, ImageLimits, ImageLayoutKind, usize, usize)> = vec![
+            (
+                ImageSettings::Qwen(QwenImageSettings {
+                    min_pixels: 3136,
+                    max_pixels: 1_000_000,
+                    position_side: 48,
+                    image_token_id: 1,
+                    video_token_id: 2,
+                }),
+                ImageLimits::default(),
+                ImageLayoutKind::Qwen,
+                4,
+                0,
+            ),
+            (
+                ImageSettings::Mimo(MimoImageSettings {
+                    min_pixels: 3136,
+                    max_pixels: 1_000_000,
+                    image_mean: [0.5; 3],
+                    image_std: [0.5; 3],
+                }),
+                ImageLimits::default(),
+                ImageLayoutKind::Mimo,
+                4,
+                0,
+            ),
+            (
+                ImageSettings::Deepseek4 {},
+                ImageLimits::default(),
+                ImageLayoutKind::Deepseek,
+                9,
+                0,
+            ),
+            (
+                ImageSettings::DeepseekRowMajor(DeepseekRowMajorImageSettings {
+                    min_pixels: 3136,
+                    max_tokens: 1024,
+                    max_width_height_ratio: None,
+                }),
+                ImageLimits::default(),
+                ImageLayoutKind::DeepseekRowMajor,
+                9,
+                0,
+            ),
+            (
+                ImageSettings::Moonvit {},
+                ImageLimits::default(),
+                ImageLayoutKind::Moonvit,
+                4,
+                0,
+            ),
+            (
+                ImageSettings::Step {},
+                ImageLimits::default(),
+                ImageLayoutKind::Step,
+                4,
+                0,
+            ),
+            (
+                ImageSettings::Radio {},
+                ImageLimits::default(),
+                ImageLayoutKind::Radio,
+                4,
+                0,
+            ),
+            (
+                ImageSettings::Glm {},
+                ImageLimits::default(),
+                ImageLayoutKind::Glm,
+                4,
+                0,
+            ),
+            (
+                ImageSettings::PatchMerge(PatchMergeImageSettings {
+                    patch_size: 14,
+                    min_pixels: 3136,
+                    max_pixels: 451_584,
+                    image_mean: [0.5; 3],
+                    image_std: [0.5; 3],
+                    image_token: "image".into(),
+                    start_token: "start".into(),
+                    end_token: "end".into(),
+                }),
+                ImageLimits::default(),
+                ImageLayoutKind::Bracketed,
+                4,
+                0,
+            ),
+            (
+                ImageSettings::PaddedGrid {},
+                ImageLimits::default(),
+                ImageLayoutKind::ClassToken,
+                4,
+                0,
+            ),
+            (
+                ImageSettings::Gemma4(Gemma4ImageSettings {
+                    patch_size: 16,
+                    pooling_kernel_size: 3,
+                    max_soft_tokens: 280,
+                    image_token: "<|image|>".into(),
+                    start_token: "<|image>".into(),
+                    end_token: "<image|>".into(),
+                }),
+                ImageLimits {
+                    patches_per_feature: 9,
+                    ..ImageLimits::default()
+                },
+                ImageLayoutKind::Bracketed,
+                9,
+                768,
+            ),
+        ];
+        for (settings, limits, layout, patches_per_feature, patch_features) in cases {
+            let processor = ImageProcessor::load(settings, limits).unwrap();
+            let vision = VisionCapabilities {
+                feature_slots: 1,
+                features_per_request: 1024,
+                max_images: 4,
+                patches_per_feature,
+                patch_capacities: vec![patches_per_feature * 16],
+                patch_features,
+            };
+            let (dtype, width) =
+                tensor_layout(layout, &vision, "vision_pixel_values", 1).unwrap();
+            assert_eq!(dtype, Dtype::Float32);
+            assert_eq!(processor.patch_features(), width, "{layout:?}");
+        }
+    }
 }

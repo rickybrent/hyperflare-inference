@@ -349,6 +349,7 @@ mod tests {
             features_per_request: 256,
             patches_per_feature: 4,
             patch_capacities: vec![1024],
+            patch_features: 0,
         };
         let vision = ModelCatalog::new(&model, &[], None).card;
         assert_eq!(vision["max_model_len"], 4096);
@@ -433,6 +434,7 @@ mod tests {
                             features_per_request: 256,
                             patches_per_feature: 4,
                             patch_capacities: vec![1024],
+                            patch_features: 0,
                         };
                     }
                     model.contract.frontend.tools = tools.then(|| ToolParser {

@@ -288,12 +288,14 @@ impl Bootstrap {
             return Err("image preparation identifier differs from its settings".into());
         }
         let images = if model.contract.vision.enabled() {
-            Some(ImageProcessor::load(
+            let processor = ImageProcessor::load(
                 frontend_settings
                     .image
                     .ok_or("vision requires prepared image settings")?,
                 image_limits(&model.contract.vision, model.limits.max_sequence_tokens)?,
-            )?)
+            )?;
+            validate_loaded_image_processor(&model, &processor)?;
+            Some(processor)
         } else {
             if frontend_settings.image.is_some() {
                 return Err("text-only model must not declare image settings".into());
@@ -438,6 +440,54 @@ impl ServerConfig {
     }
 }
 
+pub(crate) fn validate_loaded_image_processor(
+    model: &ModelConfig,
+    processor: &ImageProcessor,
+) -> Result<()> {
+    let vision = &model.contract.vision;
+    let width = processor.patch_features();
+    if model.contract.frontend.image_layout == Some(crate::model::contract::ImageLayoutKind::Bracketed) {
+        let expected = vision.bracketed_patch_features();
+        if width != expected {
+            return Err(format!(
+                "bracketed image layout patch width ({expected}) differs from image processor ({width}); re-export the core with vision.patch_features"
+            )
+            .into());
+        }
+    } else if vision.patch_features != 0 && width != vision.patch_features {
+        return Err(format!(
+            "image preparation patch width ({width}) differs from prepared vision.patch_features ({})",
+            vision.patch_features
+        )
+        .into());
+    }
+    if let (Some(span), Some(max_envelope)) = (
+        model
+            .contract
+            .frontend
+            .image_tokens
+            .as_ref()
+            .and_then(|layout| layout.span.as_ref()),
+        processor.max_image_envelope_tokens(),
+    ) {
+        if max_envelope > model.limits.prefill_chunk_size {
+            return Err(format!(
+                "maximum image envelope ({max_envelope} tokens) exceeds prefill_chunk_size ({})",
+                model.limits.prefill_chunk_size
+            )
+            .into());
+        }
+        if max_envelope > span.max_tokens {
+            return Err(format!(
+                "maximum image envelope ({max_envelope} tokens) exceeds declared span max_tokens ({})",
+                span.max_tokens
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn image_limits(vision: &crate::model::VisionCapabilities, context_tokens: usize) -> Result<ImageLimits> {
     let live_patches = vision
         .features_per_request
@@ -482,6 +532,7 @@ mod tests {
                 max_images: 4,
                 patches_per_feature: merge,
                 patch_capacities: vec![graph_patches],
+                patch_features: 0,
             };
             vision.validate().unwrap();
             let limits = image_limits(&vision, features * 3).unwrap();
@@ -879,5 +930,94 @@ mod tests {
                 .contains("invalid prepared frontend settings"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn loaded_gemma4_image_processor_validates_patch_width_and_envelope_chunk_bounds() {
+        use crate::{
+            frontend::images::Gemma4ImageSettings,
+            model::contract::{ImageLayoutKind, ImageSpan, ImageTokenLayout},
+        };
+
+        let make_model = |patch_features: usize, prefill_chunk_size: usize, span_max: usize| {
+            let mut model =
+                crate::frontend::test_support::model_config(crate::model::testing::metadata());
+            model.limits.prefill_chunk_size = prefill_chunk_size;
+            model.limits.max_sequence_tokens = 8192;
+            model.limits.validate_prefill().unwrap();
+            model.contract.vision = VisionCapabilities {
+                feature_slots: 1,
+                features_per_request: 1120,
+                max_images: 4,
+                patches_per_feature: 9,
+                patch_capacities: vec![10_080],
+                patch_features,
+            };
+            model.contract.vision.validate().unwrap();
+            model.contract.frontend.image_layout = Some(ImageLayoutKind::Bracketed);
+            model.contract.frontend.image_tokens = Some(ImageTokenLayout {
+                feature_token: 258_880,
+                span: Some(ImageSpan {
+                    start_token: 255_999,
+                    end_token: 258_882,
+                    max_tokens: span_max,
+                    interior_tokens: vec![],
+                    unscoped_tokens: vec![],
+                }),
+            });
+            model
+        };
+        let load_gemma4 = |max_soft_tokens: usize| {
+            ImageProcessor::load(
+                ImageSettings::Gemma4(Gemma4ImageSettings {
+                    patch_size: 16,
+                    pooling_kernel_size: 3,
+                    max_soft_tokens,
+                    image_token: "<|image|>".into(),
+                    start_token: "<|image>".into(),
+                    end_token: "<image|>".into(),
+                }),
+                ImageLimits {
+                    patches_per_feature: 9,
+                    max_patches_per_image: 10_080,
+                    max_total_patches: 10_080,
+                    ..ImageLimits::default()
+                },
+            )
+            .unwrap()
+        };
+
+        let proc_1120 = load_gemma4(1120);
+        // Valid 64-aligned chunk boundaries around max_envelope = 1122: 1088 fails, 1152 passes.
+        assert!(validate_loaded_image_processor(&make_model(768, 1152, 1122), &proc_1120).is_ok());
+        assert!(
+            validate_loaded_image_processor(&make_model(768, 1088, 1122), &proc_1120)
+                .unwrap_err()
+                .to_string()
+                .contains("prefill_chunk_size")
+        );
+        // Exact span.max_tokens boundary: 1121 fails, 1122 passes.
+        assert!(
+            validate_loaded_image_processor(&make_model(768, 1152, 1121), &proc_1120)
+                .unwrap_err()
+                .to_string()
+                .contains("span max_tokens")
+        );
+        // Missing patch_features (legacy 0 -> 1176) gives an actionable re-export error.
+        let legacy_err = validate_loaded_image_processor(&make_model(0, 1152, 1122), &proc_1120)
+            .unwrap_err()
+            .to_string();
+        assert!(legacy_err.contains("re-export"), "{legacy_err}");
+        // Explicit mismatched patch_features reports both actual and expected widths.
+        let mismatch_err =
+            validate_loaded_image_processor(&make_model(588, 1152, 1122), &proc_1120)
+                .unwrap_err()
+                .to_string();
+        assert!(mismatch_err.contains("768") && mismatch_err.contains("588"), "{mismatch_err}");
+
+        let proc_280 = load_gemma4(280);
+        // Valid 64-aligned chunk boundaries around max_envelope = 282: 256 fails, 320 passes.
+        assert!(validate_loaded_image_processor(&make_model(768, 320, 282), &proc_280).is_ok());
+        assert!(validate_loaded_image_processor(&make_model(768, 256, 282), &proc_280).is_err());
     }
 }

@@ -1274,6 +1274,183 @@ fn vision_upload_selects_source_image_independently_of_destination_feature_offse
     }
 }
 
+#[cfg(feature = "images")]
+#[test]
+fn legacy_bracketed_core_omitting_patch_features_loads_and_stages_1176_wide_pixels() {
+    use crate::execution::{BufferDescriptor, Dtype, GraphDescriptor, GraphKind, InputBinding, SamplingMode};
+    use crate::frontend::images::{ImageGeometry, ProcessedImages};
+    use crate::model::contract::{
+        GraphContract, GraphOperation, ImageLayoutKind, ImagePreparationKind, ImageTokenLayout,
+        InputIndexing, PreparedContract, ValueBinding, ValueSource,
+    };
+
+    let base_config = config();
+    let mut base_manifest = manifest(&base_config);
+    let mut contract = base_config.contract.clone();
+    contract.vision = VisionCapabilities {
+        feature_slots: 1,
+        features_per_request: 4,
+        max_images: 1,
+        patches_per_feature: 4,
+        patch_capacities: vec![16],
+        patch_features: 0,
+    };
+    contract.frontend.image_layout = Some(ImageLayoutKind::Bracketed);
+    contract.frontend.image_preparation = Some(ImagePreparationKind::PatchMerge);
+    contract.frontend.image_tokens = Some(ImageTokenLayout {
+        feature_token: 42,
+        span: None,
+    });
+    let scalar_binding = |name: &str, source: ValueSource, tensor: &str| ValueBinding {
+        buffer: name.into(),
+        source,
+        indexing: InputIndexing::Scalar,
+        value_offset: 0,
+        padding: 0,
+        tensor: tensor.into(),
+    };
+    contract.graphs.push(GraphContract {
+        graph: "vision-1-16".into(),
+        kind: GraphOperation::Vision,
+        state_rows_per_request: 1,
+        inputs: vec![
+            scalar_binding("vision_slot", ValueSource::RequestSlot, ""),
+            scalar_binding("vision_generation", ValueSource::RequestGeneration, ""),
+            scalar_binding("vision_feature_slot", ValueSource::ImageFeatureSlot, ""),
+            scalar_binding("vision_pixel_values", ValueSource::ImageTensor, "vision_pixel_values"),
+            scalar_binding("vision_position_ids", ValueSource::ImageTensor, "vision_position_ids"),
+            scalar_binding("vision_cu_seqlens", ValueSource::ImageTensor, "vision_cu_seqlens"),
+            scalar_binding("vision_num_patches", ValueSource::ImageTensor, "vision_num_patches"),
+            scalar_binding("vision_num_features", ValueSource::ImageTensor, "vision_num_features"),
+            scalar_binding("vision_feature_offset", ValueSource::ImageTensor, "vision_feature_offset"),
+        ],
+        state: vec![],
+        pending_token: None,
+        draft_cursor: None,
+        tuned_bindings: vec![],
+        embedding_tables: vec![],
+    });
+
+    // Simulate a legacy core JSON that predates `vision.patch_features`.
+    let mut json = serde_json::to_value(&contract).unwrap();
+    json["vision"].as_object_mut().unwrap().remove("patch_features");
+    let decoded: PreparedContract = serde_json::from_value(json).unwrap();
+    assert_eq!(decoded.vision.patch_features, 0);
+
+    let mut legacy_config = base_config;
+    legacy_config.contract = decoded;
+
+    let build_manifest = |pixel_width: usize| {
+        let mut m = base_manifest.clone();
+        let mut address = m
+            .buffers
+            .iter()
+            .map(|b| (b.address + b.nbytes).next_multiple_of(8))
+            .max()
+            .unwrap_or(0x10000);
+        let mut host = m.input_frame_bytes;
+        let frame_offset = m.graphs[0].input_bindings[0].clone();
+        let seq_offset = m.graphs[0].input_bindings[1].clone();
+        let mut bindings = vec![frame_offset, seq_offset];
+        for (name, dtype, shape) in [
+            ("vision_slot", Dtype::Int64, vec![1]),
+            ("vision_generation", Dtype::Int64, vec![1]),
+            ("vision_feature_slot", Dtype::Int32, vec![1]),
+            ("vision_pixel_values", Dtype::Float32, vec![16, pixel_width]),
+            ("vision_position_ids", Dtype::Int64, vec![16, 2]),
+            ("vision_cu_seqlens", Dtype::Int32, vec![2]),
+            ("vision_num_patches", Dtype::Int32, vec![1]),
+            ("vision_num_features", Dtype::Int32, vec![1]),
+            ("vision_feature_offset", Dtype::Int32, vec![1]),
+        ] {
+            let nbytes = shape.iter().product::<usize>() * dtype.size();
+            let mut stride = 1;
+            let mut strides: Vec<_> = shape
+                .iter()
+                .rev()
+                .map(|n| {
+                    let s = stride;
+                    stride *= n;
+                    s
+                })
+                .collect();
+            strides.reverse();
+            m.buffers.push(BufferDescriptor {
+                name: name.into(),
+                address,
+                nbytes,
+                dtype,
+                shape,
+                strides,
+            });
+            bindings.push(InputBinding {
+                buffer_name: name.into(),
+                host_offset: host,
+                nbytes,
+            });
+            address += nbytes.next_multiple_of(8);
+            host += nbytes.next_multiple_of(8);
+        }
+        m.input_frame_bytes = host;
+        m.graphs.push(GraphDescriptor {
+            name: "vision-1-16".into(),
+            kind: GraphKind::Vision,
+            sampling_mode: SamplingMode::General,
+            handle: 1,
+            batch_capacity: 1,
+            token_capacity: 16,
+            prefill_capacity: 0,
+            packed_token_capacity: 0,
+            draft_tokens: 0,
+            confidence_width: 0,
+            estimated_duration_ns: 1000,
+            input_bindings: bindings,
+            tuned_bindings: vec![],
+        });
+        m
+    };
+
+    // Legacy 1176-wide Bracketed core loads cleanly through Inputs::new and stages 16 * 1176 floats.
+    let legacy_manifest = build_manifest(1176);
+    assert!(Inputs::new(&legacy_config, &legacy_manifest).is_ok());
+    let images = ProcessedImages {
+        pixel_values: (0..16 * 1176).map(|i| i as f32).collect(),
+        geometry: vec![ImageGeometry {
+            height: 56,
+            width: 56,
+            grid_thw: [1, 4, 4],
+            patches: 16,
+            tokens: 4,
+        }],
+        position_ids: (0..16).map(|i| [i % 4, i / 4]).collect(),
+        interpolation_indices: vec![],
+        interpolation_weights: vec![],
+        cu_seqlens: vec![0, 16],
+    };
+    let staged = crate::frontend::images::packing::prepare(
+        &legacy_config,
+        crate::scheduler::RequestHandle { slot: 0, generation: 1 },
+        &images,
+        0,
+        0,
+    )
+    .unwrap();
+    let pixels = staged
+        .uploads()
+        .into_iter()
+        .find(|u| u.buffer == "vision_pixel_values")
+        .unwrap();
+    assert_eq!(pixels.bytes.len(), 16 * 1176 * 4);
+
+    // Undersized 768-wide buffer or non-square patches_per_feature is rejected at Inputs::new.
+    assert!(Inputs::new(&legacy_config, &build_manifest(768)).is_err());
+    let mut non_square = legacy_config;
+    non_square.contract.vision.patches_per_feature = 3;
+    non_square.contract.vision.patch_capacities = vec![15];
+    base_manifest = build_manifest(1176);
+    assert!(Inputs::new(&non_square, &base_manifest).is_err());
+}
+
 fn grammar_packing_fixture() -> (
     ModelConfig,
     crate::execution::ExecutionManifest,

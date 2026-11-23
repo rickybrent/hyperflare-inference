@@ -165,6 +165,11 @@ pub(super) fn frontend_settings(value: wire::FrontendSettings) -> Result<serde_j
                     "image_mean": config.image_mean, "image_std": config.image_std,
                     "image_token": config.image_token, "start_token": config.start_token, "end_token": config.end_token,
                 }}),
+                Profile::Gemma4(config) => serde_json::json!({"gemma4": {
+                    "patch_size": config.patch_size, "pooling_kernel_size": config.pooling_kernel_size,
+                    "max_soft_tokens": config.max_soft_tokens,
+                    "image_token": config.image_token, "start_token": config.start_token, "end_token": config.end_token,
+                }}),
                 Profile::DeepseekRowMajor(config) => serde_json::json!({"deepseek_row_major": {
                     "min_pixels": config.min_pixels, "max_tokens": config.max_tokens,
                     "max_width_height_ratio": config.max_width_height_ratio,
@@ -801,6 +806,61 @@ mod tests {
                 crate::frontend::images::ImageProcessor::load(settings, Default::default())
                     .unwrap();
             assert_eq!(processor.geometry(81, 40).unwrap().tokens, 3);
+        }
+    }
+
+    #[test]
+    fn serialized_gemma4_profile_selects_only_image_preparation() {
+        // Field 11 adds the Gemma 4 profile without changing any preceding profile tag.
+        let encoded = wire::FrontendSettings {
+            tokenizer: Some(wire::TokenizerSettings::default()),
+            image: Some(wire::ImageSettings {
+                profile: Some(wire::image_settings::Profile::Gemma4(
+                    wire::Gemma4ImageSettings {
+                        patch_size: 16,
+                        pooling_kernel_size: 3,
+                        max_soft_tokens: 280,
+                        image_token: "<|image|>".into(),
+                        start_token: "<|image>".into(),
+                        end_token: "<image|>".into(),
+                    },
+                )),
+            }),
+            eos_token_ids: vec![1],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let decoded = wire::FrontendSettings::decode(encoded.as_slice()).unwrap();
+        let json = frontend_settings(decoded).unwrap();
+        assert_eq!(
+            json["image"],
+            serde_json::json!({"gemma4": {
+                "patch_size": 16,
+                "pooling_kernel_size": 3,
+                "max_soft_tokens": 280,
+                "image_token": "<|image|>",
+                "start_token": "<|image>",
+                "end_token": "<image|>",
+            }})
+        );
+        assert_eq!(json["prompt_encoder"], 0);
+        #[cfg(feature = "server")]
+        {
+            let frontend: crate::frontend::FrontendSettings = serde_json::from_value(json).unwrap();
+            let settings = frontend.image.unwrap();
+            assert_eq!(
+                settings.preparation_kind(),
+                crate::model::contract::ImagePreparationKind::Gemma4
+            );
+            let processor = crate::frontend::images::ImageProcessor::load(
+                settings,
+                crate::frontend::images::ImageLimits {
+                    patches_per_feature: 9,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(processor.geometry(672, 672).unwrap().tokens, 256);
         }
     }
 

@@ -1176,6 +1176,7 @@ mod native_prompt_tests {
                 max_images: 2,
                 patches_per_feature: 4,
                 patch_capacities: vec![geometry.patches],
+                patch_features: 0,
             };
             config.contract.frontend.image_layout = Some(layout);
             config.contract.frontend.position_dimensions = if layout == ImageLayoutKind::Qwen {

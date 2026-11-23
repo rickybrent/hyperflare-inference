@@ -79,7 +79,7 @@ serving contract and replay path unchanged.
 | `version` | Semantic contract version, 1, 2, or 3; exporters write 3 |
 | `vocabulary` | Valid sampled token range and histogram/mask geometry |
 | `input_vocabulary` | Valid input range, including declared nonsampled image sentinels |
-| `vision` | Feature-slot and per-window feature capacities, patch-to-feature ratio, and captured patch capacities |
+| `vision` | Feature-slot and per-window feature capacities, patch-to-feature ratio, captured patch capacities, and per-patch feature width (`patch_features`, where `0` defaults to the legacy `Bracketed` width `1176`) |
 | `cache` | Logical page tokens, attention-history storage, and page-table views |
 | `graphs` | Per-program operation, value bindings, persistent-state accesses, and resource dependencies |
 | `frontend` | Independent parser and image implementation identifiers plus their syntax and layout data |

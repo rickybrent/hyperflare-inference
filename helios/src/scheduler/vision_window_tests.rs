@@ -40,6 +40,7 @@ fn scheduler_with_resources(
                 max_images: 4,
                 patches_per_feature: 4,
                 patch_capacities: vec![256, 1024, 4096, 16_384],
+                patch_features: 0,
             },
             draft_pages_per_request: 1,
             completion_inputs: vec![],

@@ -51,7 +51,17 @@ pub fn prepare_image_inputs(
     }
     let mut prepared = match config.contract.frontend.image_layout {
         Some(ImageLayoutKind::Bracketed) => crate::frontend::images::layouts::bracketed::prepare_input(
-            frontend, processor, rendered, &images,
+            frontend,
+            processor,
+            rendered,
+            &images,
+            config
+                .contract
+                .frontend
+                .image_tokens
+                .as_ref()
+                .and_then(|layout| layout.span.as_ref())
+                .is_some(),
         )?,
         Some(ImageLayoutKind::Glm) => crate::frontend::images::layouts::glm::prepare_input(
             frontend, processor, rendered, &images,
@@ -406,6 +416,7 @@ mod tests {
             "<｜deepseek_image｜>", "<|media_pad|>", "<|media_begin|>", "<|media_content|>",
             "<|media_end|>", "<im_patch>", "<patch_start>", "<patch_end>", "<patch_newline>",
             "<im_start>", "<im_end>", "<image>", "<img>", "</img>",
+            "<|image|>", "<|image>", "<image|>",
             "<|start|>", "<|message|>", "<|eom|>", "<|eot|>",
         ].map(|text| tokenizers::AddedToken::from(text, true))).unwrap();
         let asset = |name: &str, bytes: &[u8]| {
@@ -455,6 +466,7 @@ mod tests {
             config.contract.vision = crate::model::VisionCapabilities {
                 feature_slots: 4, features_per_request: geometry.tokens,
                 max_images: 1, patches_per_feature: merge, patch_capacities: vec![geometry.patches],
+                patch_features: 0,
             };
             let syntax = &mut config.contract.frontend;
             syntax.image_layout = Some(layout);
@@ -1154,5 +1166,118 @@ mod tests {
             let actual = start(&qwen, text, ranges.clone(), &[user.clone()], options.clone());
             assert_eq!(actual, expected, "{ranges:?}");
         }
+    }
+
+    #[test]
+    fn bracketed_layout_emits_atomic_spans_only_when_contract_declares_them() {
+        use crate::frontend::images::{Gemma4ImageSettings, ImageLimits, ImageSettings};
+        use crate::model::contract::{ImageSpan, ImageTokenLayout};
+        let frontend = image_frontend();
+        let token = |text: &str| frontend.encode(text, false).unwrap()[0];
+        let image_token = token("<|image|>");
+        let start_token = token("<|image>");
+        let end_token = token("<image|>");
+        let processor = ImageProcessor::load(
+            ImageSettings::Gemma4(Gemma4ImageSettings {
+                patch_size: 16,
+                pooling_kernel_size: 3,
+                max_soft_tokens: 280,
+                image_token: "<|image|>".into(),
+                start_token: "<|image>".into(),
+                end_token: "<image|>".into(),
+            }),
+            ImageLimits {
+                max_patches_per_image: 2520,
+                max_total_patches: 5040,
+                patches_per_feature: 9,
+                ..ImageLimits::default()
+            },
+        )
+        .unwrap();
+        let image = RgbImage::new(91, 37, vec![128; 91 * 37 * 3]).unwrap();
+        // 91x37 under max_soft_tokens=280 resizes to 260 soft tokens (262-token envelope).
+        let text = "Compare <|image|> and <|image|>".to_string();
+        let rendered = RenderedPrompt {
+            token_ids: frontend.encode(&text, false).unwrap(),
+            message_boundaries: vec![],
+            text,
+            image_sources: vec![],
+            image_checkpoint_hints: vec![],
+            ordinary: vec![],
+        };
+        let mut config = super::super::tests::config();
+        config.limits.max_sequence_tokens = 4096;
+        config.limits.prefill_chunk_size = 512;
+        config.contract.vocabulary = 1000;
+        config.contract.input_vocabulary = 1000;
+        config.contract.vision = crate::model::VisionCapabilities {
+            feature_slots: 4,
+            features_per_request: 560,
+            max_images: 2,
+            patches_per_feature: 9,
+            patch_capacities: vec![2520, 5040],
+            patch_features: 768,
+        };
+        config.contract.frontend.image_layout = Some(ImageLayoutKind::Bracketed);
+        config.contract.frontend.position_dimensions = 0;
+        config.contract.frontend.rejected_tokens.clear();
+        config.contract.frontend.image_tokens = Some(ImageTokenLayout {
+            feature_token: image_token,
+            span: Some(ImageSpan {
+                start_token,
+                end_token,
+                max_tokens: 282,
+                interior_tokens: vec![],
+                unscoped_tokens: vec![],
+            }),
+        });
+
+        let prepared = prepare_input(
+            &config,
+            &frontend,
+            Some(&processor),
+            &rendered,
+            vec![image.clone(), image.clone()],
+        )
+        .unwrap();
+        assert_eq!(prepared.data.spans.len(), 2);
+        for (span, input) in prepared.data.spans.iter().zip(&prepared.conditioned_inputs) {
+            assert_eq!(span, &input.token_span);
+            assert_eq!(span.len(), 262);
+            assert_eq!(prepared.tokens[span.start], start_token);
+            assert_eq!(prepared.tokens[span.end - 1], end_token);
+            assert!(
+                prepared.tokens[span.start + 1..span.end - 1]
+                    .iter()
+                    .all(|id| *id == image_token)
+            );
+        }
+
+        // A valid 64-aligned chunk size smaller than the 262-token span is rejected.
+        let mut small_chunk = config.clone();
+        small_chunk.limits.prefill_chunk_size = 256;
+        assert!(
+            prepare_input(
+                &small_chunk,
+                &frontend,
+                Some(&processor),
+                &rendered,
+                vec![image.clone(), image.clone()],
+            )
+            .is_err()
+        );
+
+        // Without declared atomic spans (e.g. MiniMax), Bracketed leaves data.spans empty.
+        let mut no_spans = config;
+        no_spans.contract.frontend.image_tokens.as_mut().unwrap().span = None;
+        let prepared = prepare_input(
+            &no_spans,
+            &frontend,
+            Some(&processor),
+            &rendered,
+            vec![image.clone(), image],
+        )
+        .unwrap();
+        assert!(prepared.data.spans.is_empty());
     }
 }

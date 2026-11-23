@@ -89,7 +89,8 @@ def _expected(config, values, label):
             raise ValueError(f"unsupported {label} {key}")
 
 
-def image_settings(config, model, profile, qwen_model_type="qwen4_exp"):
+def image_settings(config, model, profile, qwen_model_type="qwen4_exp", *,
+                   tokenizer_config=None, snapshot=None):
     """Resolve the image settings the native frontend consumes for ``profile``.
 
     The Qwen profile serves two checkpoint families with one processor; ``qwen_model_type``
@@ -110,6 +111,66 @@ def image_settings(config, model, profile, qwen_model_type="qwen4_exp"):
         _expected(model["vision_config"], {"native_patch_size": 20, "adapter_merge_size": 2,
             "posemb_grid_size": 32, "temporal_patch_size": 2}, "padded-grid vision configuration")
         return {"padded_grid": {}}
+    if profile == "gemma4":
+        # Validate the canonical Gemma4ImageProcessor geometry (`image_processor.max_soft_tokens`,
+        # `patch_size=16`, `pooling_kernel_size=3`) and tokenizer envelope for `gemma4` /
+        # `gemma4_vision` checkpoints; encoder depth and width belong to the preparing recipe.
+        if not isinstance(config, dict):
+            raise ValueError("unsupported Gemma 4 processor")
+        _expected(config, {"processor_class": "Gemma4Processor"}, "Gemma 4 processor")
+        image = config.get("image_processor")
+        if not isinstance(image, dict):
+            raise ValueError("unsupported Gemma 4 image processor")
+        _expected(image, {"image_processor_type": "Gemma4ImageProcessor", "patch_size": 16,
+            "pooling_kernel_size": 3, "do_resize": True, "do_rescale": True,
+            "do_normalize": False, "image_mean": [0.0] * 3, "image_std": [1.0] * 3},
+            "Gemma 4 image processor")
+        optional = {"resample": 3, "rescale_factor": 1 / 255, "do_convert_rgb": True}
+        _expected(image, {key: value for key, value in optional.items() if key in image},
+            "Gemma 4 image processor")
+        max_soft_tokens = image.get("max_soft_tokens")
+        if type(max_soft_tokens) is not int or max_soft_tokens not in (70, 140, 280, 560, 1120):
+            raise ValueError("unsupported Gemma 4 max_soft_tokens")
+        if not isinstance(model, dict):
+            raise ValueError("unsupported Gemma 4 model configuration")
+        _expected(model, {"model_type": "gemma4"}, "Gemma 4 model configuration")
+        vision = model.get("vision_config")
+        if not isinstance(vision, dict):
+            raise ValueError("unsupported Gemma 4 vision configuration")
+        _expected(vision, {"model_type": "gemma4_vision", "patch_size": 16,
+            "pooling_kernel_size": 3}, "Gemma 4 vision configuration")
+        if not isinstance(tokenizer_config, dict) or snapshot is None:
+            raise ValueError(
+                "Gemma 4 image settings require tokenizer_config and snapshot to validate envelope tokens")
+        tokens = {}
+        for field, key in (("image_token", "image_token"), ("start_token", "boi_token"),
+                           ("end_token", "eoi_token")):
+            if tokenizer_config.get(key) is None:
+                raise ValueError(f"missing Gemma 4 {key}")
+            value = _token(tokenizer_config[key])
+            if not value:
+                raise ValueError(f"empty Gemma 4 {key}")
+            tokens[field] = value
+        if len(set(tokens.values())) != 3:
+            raise ValueError("Gemma 4 image envelope tokens must be distinct")
+        from tokenizers import Tokenizer
+
+        tokenizer = Tokenizer.from_file(str(Path(snapshot) / "tokenizer.json"))
+        for field, id_key in (("image_token", "image_token_id"), ("start_token", "boi_token_id"),
+                              ("end_token", "eoi_token_id")):
+            tok = tokens[field]
+            token_id = tokenizer.token_to_id(tok)
+            if token_id is None or tokenizer.encode(tok, add_special_tokens=False).ids != [token_id]:
+                raise ValueError(f"Gemma 4 {field} must encode as a single vocabulary token")
+            expected_id = model.get(id_key)
+            if expected_id is not None and (type(expected_id) is not int or expected_id != token_id):
+                raise ValueError(f"Gemma 4 {id_key} does not match tokenizer vocabulary")
+        return {"gemma4": dict(
+            patch_size=16,
+            pooling_kernel_size=3,
+            max_soft_tokens=max_soft_tokens,
+            **tokens,
+        )}
     if profile == "glm":
         _expected(config, {"processor_class": "Glm5NextProcessor"}, "GLM processor")
         image = config["image_processor"]
@@ -232,20 +293,23 @@ def prepare_frontend(snapshot, *, eos_token_ids, image_profile=None, preprocesso
     if (not eos_token_ids or len(eos_token_ids) > 8 or len(set(eos_token_ids)) != len(eos_token_ids)
             or any(type(value) is not int or not 0 <= value < 2**32 for value in eos_token_ids)):
         raise ValueError("EOS token IDs must be one through eight distinct uint32 values")
-    result = {"tokenizer": tokenizer_settings(json.loads((snapshot / "tokenizer_config.json").read_text())),
+    tokenizer_config = json.loads((snapshot / "tokenizer_config.json").read_text())
+    result = {"tokenizer": tokenizer_settings(tokenizer_config),
               "eos_token_ids": eos_token_ids}
     if prompt_encoder != PromptEncoder.PROMPT_JINJA:
         result["prompt_encoder"] = int(prompt_encoder)
     if image_profile is not None:
+        model_config = json.loads((snapshot / "config.json").read_text())
         expected_profile = {PromptEncoder.DEEPSEEK_V4: "deepseek4",
                             PromptEncoder.DEEPSEEK_V41: "deepseek_row_major"}.get(prompt_encoder)
         if expected_profile is not None:
             if image_profile != expected_profile:
                 raise ValueError("image profile differs from the prompt encoder")
             result["image_placeholder_token_id"] = _native_image_placeholder(
-                snapshot, json.loads((snapshot / "config.json").read_text()), prompt_encoder)
+                snapshot, model_config, prompt_encoder)
         path = snapshot / "preprocessor_config.json" if preprocessor is None else Path(preprocessor)
-        result["image"] = image_settings({} if image_profile == "deepseek_row_major" else json.loads(path.read_text()),
-            json.loads((snapshot / "config.json").read_text()), image_profile,
-            qwen_model_type=qwen_model_type)
+        result["image"] = image_settings(
+            {} if image_profile == "deepseek_row_major" else json.loads(path.read_text()),
+            model_config, image_profile, qwen_model_type=qwen_model_type,
+            tokenizer_config=tokenizer_config, snapshot=snapshot)
     return result

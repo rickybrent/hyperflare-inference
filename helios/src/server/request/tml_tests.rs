@@ -279,6 +279,7 @@ fn images_preserve_reference_order_feature_spans_and_message_endpoints() {
     inkling.config.contract.vision = crate::model::VisionCapabilities {
         feature_slots: 4, max_images: 4, features_per_request: 16384,
         patches_per_feature: 4, patch_capacities: vec![65536],
+        patch_features: 0,
     };
     let processor = ImageProcessor::load(ImageSettings::PaddedGrid {}, ImageLimits {
         max_images: 4, max_patches_per_image: 65536, max_total_patches: 65536,

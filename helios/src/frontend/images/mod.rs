@@ -14,6 +14,7 @@ mod deepseek_row_major;
 pub(crate) mod layouts;
 mod mimo;
 mod glm;
+mod gemma4;
 mod moonvit;
 mod orientation;
 mod conditioned;
@@ -256,6 +257,7 @@ pub enum ImageSettings {
     Radio {},
     Glm {},
     PaddedGrid {},
+    Gemma4(Gemma4ImageSettings),
 }
 
 /// The text that stands for an image in a RADIO prompt.
@@ -282,6 +284,7 @@ impl ImageSettings {
             Self::Radio {} => ImagePreparationKind::Radio,
             Self::Glm {} => ImagePreparationKind::Glm,
             Self::PaddedGrid {} => ImagePreparationKind::PaddedGrid,
+            Self::Gemma4(_) => ImagePreparationKind::Gemma4,
         }
     }
 }
@@ -326,6 +329,17 @@ pub struct PatchMergeImageSettings {
     pub end_token: String,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Gemma4ImageSettings {
+    pub patch_size: usize,
+    pub pooling_kernel_size: usize,
+    pub max_soft_tokens: usize,
+    pub image_token: String,
+    pub start_token: String,
+    pub end_token: String,
+}
+
 #[derive(Clone)]
 enum Profile {
     Qwen(qwen::QwenProcessor),
@@ -338,6 +352,7 @@ enum Profile {
     Radio,
     Glm,
     PaddedGrid,
+    Gemma4(gemma4::Processor),
 }
 
 impl ImageProcessor {
@@ -371,6 +386,7 @@ impl ImageProcessor {
             ImageSettings::Radio {} => Profile::Radio,
             ImageSettings::Glm {} => Profile::Glm,
             ImageSettings::PaddedGrid {} => Profile::PaddedGrid,
+            ImageSettings::Gemma4(settings) => Profile::Gemma4(gemma4::Processor::load(settings, limits)?),
             ImageSettings::Mimo(settings) => Profile::MiMo(mimo::load(&settings, limits)?),
             ImageSettings::PatchMerge(settings) => Profile::PatchMerge(patch_merge::Processor::load(settings, limits)?),
             ImageSettings::Qwen(settings) => {
@@ -438,6 +454,27 @@ impl ImageProcessor {
 
     pub fn limits(&self) -> ImageLimits {
         self.limits
+    }
+
+    pub(crate) fn patch_features(&self) -> usize {
+        match &self.profile {
+            Profile::Qwen(_) | Profile::MiMo(_) => 1536,
+            Profile::Radio => 768,
+            Profile::Glm => 1176,
+            Profile::PatchMerge(processor) => processor.patch_features(),
+            Profile::PaddedGrid => padded_grid::FEATURES,
+            Profile::Gemma4(processor) => processor.patch_features(),
+            Profile::DeepSeek4 | Profile::DeepseekRowMajor(_) | Profile::Moonvit | Profile::Step => {
+                588
+            }
+        }
+    }
+
+    pub(crate) fn max_image_envelope_tokens(&self) -> Option<usize> {
+        match &self.profile {
+            Profile::Gemma4(processor) => Some(processor.max_envelope_tokens()),
+            _ => None,
+        }
     }
 
     pub(crate) fn check_batch(&self, images: usize, patches: usize) -> Result<()> {
@@ -843,6 +880,7 @@ impl ImageProcessor {
             Profile::Radio => radio::geometry(self.limits, width, height),
             Profile::Glm => glm::geometry(self.limits, width, height),
             Profile::PaddedGrid => padded_grid::geometry(self.limits, width, height),
+            Profile::Gemma4(profile) => profile.geometry(width, height),
         }
     }
     pub fn resized_rgb(&self, image: &RgbImage) -> Result<(ImageGeometry, Vec<u8>)> {
@@ -857,6 +895,7 @@ impl ImageProcessor {
             Profile::Radio => Err("RADIO resizing produces float32 pixels; use process".into()),
             Profile::Glm => glm::resized_rgb(self.limits, image),
             Profile::PaddedGrid => Err("padded-grid preparation pads with values outside RGB8; use process".into()),
+            Profile::Gemma4(profile) => profile.resized_rgb(image),
         }
     }
     pub fn process(&self, images: &[RgbImage]) -> Result<ProcessedImages> {
@@ -876,6 +915,7 @@ impl ImageProcessor {
             Profile::Radio => radio::process(self.limits, images),
             Profile::Glm => glm::process(self.limits, images),
             Profile::PaddedGrid => padded_grid::process(self.limits, images),
+            Profile::Gemma4(profile) => profile.process(images),
         }
     }
     pub fn expand_prompt(
@@ -896,6 +936,7 @@ impl ImageProcessor {
             Profile::Radio => Err("RADIO image expansion requires its model contract".into()),
             Profile::Glm => Err("GLM image expansion requires its prepared layout".into()),
             Profile::PaddedGrid => Err("padded-grid image expansion requires its prepared layout".into()),
+            Profile::Gemma4(profile) => profile.expand_prompt(frontend, prompt_token_ids, images),
         }
     }
 }

@@ -20,6 +20,7 @@ pub(crate) fn prepare_input(
     processor: Option<&ImageProcessor>,
     rendered: &RenderedPrompt,
     images: &[ImageDescription],
+    atomic_spans: bool,
 ) -> Result<PreparedInput> {
     if images.is_empty() {
         if let Some(processor) = processor {
@@ -48,11 +49,25 @@ pub(crate) fn prepare_input(
     let processed = processor.describe_inputs(images)?;
     let expanded = processor.expand_prompt(frontend, &rendered.token_ids, &processed)?;
     let mut conditioning = Vec::new();
+    let mut spans = Vec::new();
     let mut image = 0;
     let mut feature = 0;
+    let mut run_start = None;
     let mut indices = Vec::with_capacity(expanded.token_ids.len());
+    let mut flush_span = |start: usize, end: usize| -> Result<()> {
+        if atomic_spans {
+            if start == 0 || end >= expanded.token_ids.len() {
+                return Err("bracketed image feature run is outside the expanded prompt".into());
+            }
+            spans.push(start - 1..end + 1);
+        }
+        Ok(())
+    };
     for (position, kind) in expanded.mm_token_type_ids.iter().enumerate() {
         if *kind == 0 {
+            if let Some(start) = run_start.take() {
+                flush_span(start, position)?;
+            }
             indices.push(-1);
             continue;
         }
@@ -62,10 +77,14 @@ pub(crate) fn prepare_input(
                 position: position as u64,
                 identity: source.identity,
             });
+            run_start = Some(position);
             image += 1;
         }
         indices.push(feature);
         feature += 1;
+    }
+    if let Some(start) = run_start.take() {
+        flush_span(start, expanded.mm_token_type_ids.len())?;
     }
     if image != images.len()
         || feature as usize != processed.geometry.iter().map(|g| g.tokens).sum::<usize>()
@@ -84,6 +103,7 @@ pub(crate) fn prepare_input(
         tokens: expanded.token_ids,
         data: PromptData {
             vision_token_indices: indices,
+            spans,
             ..Default::default()
         },
         conditioning,
@@ -152,7 +172,7 @@ mod tests {
             RgbImage::new(672, 672, vec![255; 672 * 672 * 3]).unwrap(),
         ];
         let images = images.iter().map(|image| processor.describe_image(image).unwrap()).collect::<Vec<_>>();
-        let prepared = prepare_input(&frontend, Some(&processor), &rendered, &images).unwrap();
+        let prepared = prepare_input(&frontend, Some(&processor), &rendered, &images, false).unwrap();
         assert_eq!(
             prepared.tokens.iter().filter(|id| **id == 200025).count(),
             580
@@ -176,6 +196,6 @@ mod tests {
             assert_eq!(prepared.tokens[p + count], end);
             assert!(prepared.tokens[p..p + count].iter().all(|id| *id == 200025));
         }
-        assert!(prepare_input(&frontend, Some(&processor), &rendered, &[]).is_err());
+        assert!(prepare_input(&frontend, Some(&processor), &rendered, &[], false).is_err());
     }
 }

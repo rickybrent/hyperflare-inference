@@ -448,11 +448,13 @@ pub(super) fn vision_json(
             Profile::Radio(_) => json!({"profile": "radio"}),
             Profile::PatchMerge(c) => json!({"profile": "patch_merge", "patch_size": c.patch_size,
                 "min_pixels": c.min_pixels, "max_pixels": c.max_pixels}),
+            Profile::Gemma4(c) => json!({"profile": "gemma4", "patch_size": c.patch_size,
+                "pooling_kernel_size": c.pooling_kernel_size, "max_soft_tokens": c.max_soft_tokens}),
             Profile::Glm(_) => json!({"profile": "glm"}),
             Profile::PaddedGrid(_) => json!({"profile": "padded_grid"}),
         }
     });
-    json!({
+    let mut value = json!({
         "feature_slots": vision.feature_slots,
         "max_image_tokens_per_prompt": context_tokens,
         "max_images": context_tokens,
@@ -460,7 +462,11 @@ pub(super) fn vision_json(
         "patches_per_feature": vision.patches_per_feature,
         "patch_capacities": vision.patch_capacities,
         "image": profile,
-    })
+    });
+    if vision.patch_features != 0 {
+        value["patch_features"] = json!(vision.patch_features);
+    }
+    value
 }
 
 fn engram_json(engram: &wire::Engram) -> Value {
@@ -1151,6 +1157,7 @@ mod tests {
             max_images: 0,
             patches_per_feature: 0,
             patch_capacities: vec![],
+            patch_features: 0,
         };
         assert_eq!(
             vision_json(Some(&disabled), &settings, Some(131072)),
@@ -1162,6 +1169,7 @@ mod tests {
             max_images: 4096,
             patches_per_feature: 9,
             patch_capacities: vec![3456],
+            patch_features: 0,
         };
         let value = vision_json(Some(&enabled), &settings, Some(131072));
         assert_eq!(value["max_image_tokens_per_prompt"], 131072);

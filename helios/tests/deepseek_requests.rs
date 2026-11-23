@@ -545,6 +545,7 @@ fn base64_images_follow_the_rendered_placeholder_order() {
                 max_images: 4,
                 patches_per_feature: 9,
                 patch_capacities: vec![576, 1152, 2304, 4608, 9216],
+                patch_features: 0,
             };
             let syntax = &mut f.config.contract.frontend;
             syntax.image_preparation = Some(ImagePreparationKind::DeepseekRowMajor);

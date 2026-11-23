@@ -87,6 +87,7 @@ fn publish_configured(
                         max_images: 4,
                         patches_per_feature: 3,
                         patch_capacities: vec![64, 128],
+                        patch_features: 0,
                     }),
                     frontend: Some(runtime_wire::FrontendContract {
                         tools: Some(runtime_wire::ToolParser {
